@@ -391,6 +391,11 @@ class ReverseAD(object):
             item.context_expr.args[0], self.namer)
       template.ReplaceTransformer(replacements).visit(node)
       return primal, adjoint
+    if ast_.is_preaccumulate_statement(node):
+      info = ast_.get_preaccumulate_info(node)
+      print("DEBUG: Found preacc statement! Preacc mode:", info.mode)
+      body, adjoint_body = self.visit_statements(node.body)
+      return node, adjoint_body
     else:
       return node, []
 

@@ -30,6 +30,7 @@ from tangent.utils import copy
 from tangent.utils import grad_dot
 from tangent.utils import init_grad
 from tangent.utils import insert_grad_of
+from tangent.utils import preaccumulate
 from tangent.utils import pop
 from tangent.utils import pop_stack
 from tangent.utils import push

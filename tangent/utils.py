@@ -752,6 +752,15 @@ def insert_grad_of(var):
                    'the `with insert_grad_of` statement')
 
 
+class preaccumulate_info:
+  def __init__(self, **kwargs):
+    self.mode = kwargs["mode"]
+
+
+def preaccumulate(mode='reverse'):
+  pass
+
+
 def grad_dot(dy, x1, x2):
   """Gradient of NumPy dot product w.r.t. to the left hand side.
 

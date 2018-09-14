@@ -132,3 +132,26 @@ def is_insert_grad_of_statement(node):
     raise ValueError
   else:
     return False
+
+
+def is_preaccumulate_statement(node):
+  tangent_calls = [anno.getanno(item.context_expr, 'func', None)
+                   is utils.preaccumulate for item in node.items]
+
+  if all(tangent_calls):
+    return True
+  elif any(tangent_calls):
+    raise ValueError
+  else:
+    return False
+
+
+def get_preaccumulate_info(node):
+  assert is_preaccumulate_statement(node)
+  assert len(node.items) == 1
+
+  withitem = node.items[0]
+  keywords = withitem.context_expr.keywords
+
+  info = utils.preaccumulate_info(**{keyword.arg: gast.literal_eval(keyword.value) for keyword in keywords})
+  return info
