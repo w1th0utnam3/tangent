@@ -102,7 +102,7 @@ class ReadCounts(gast.NodeVisitor):
       self.reaching_definitions = anno.getanno(node, 'definitions_in')
     super(ReadCounts, self).visit(node)
     if anno.hasanno(node, 'definitions_in'):
-      self.reaching_definitions = None
+      self.reaching_definitions = ()
 
   def visit_Name(self, node):
     if isinstance(node.ctx, gast.Load):

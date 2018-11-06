@@ -298,7 +298,7 @@ class Unused(gast.NodeVisitor):
                        if def_[0] == node.id)
     super(Unused, self).visit(node)
     if anno.hasanno(node, 'definitions_gen'):
-      self.reaching_definitions = None
+      self.reaching_definitions = ()
 
 
 def unused(node):
