@@ -67,6 +67,7 @@ from tangent import fence
 from tangent import forward_ad
 from tangent import naming
 from tangent import optimization
+from tangent import preaccumulation
 from tangent import quoting
 from tangent import reverse_ad
 
@@ -90,12 +91,18 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
   node = annotate.resolve_calls(func)
   node = desugar.explicit_loop_indexes(node)
   fence.validate(node, inspect.getsource(func))
+  body = node.body[0]
+
+  if preaccumulation._has_preaccumulate_decorator(body):
+    mode = 'preaccumulate'
+
   node = anf_.anf(node)
   if verbose >= 2:
     print('ANF')
     print(quoting.to_source(node))
+
   if mode == 'reverse':
-    node, required, stack = reverse_ad.reverse_ad(node.body[0], wrt,
+    node, required, stack = reverse_ad.reverse_ad(body, wrt,
                                                   preserve_result, check_dims)
     if verbose >= 2:
       print('RAW')
@@ -108,8 +115,12 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
       print('MOTION')
       print(quoting.to_source(node))
   elif mode == 'forward':
-    node, required = forward_ad.forward_ad(node.body[0], wrt, preserve_result,
+    node, required = forward_ad.forward_ad(body, wrt, preserve_result,
                                            check_dims)
+  elif mode == 'preaccumulate':
+    node, required = forward_ad.forward_ad(body, wrt, preserve_result,
+                                           check_dims)
+
   return node, required
 
 

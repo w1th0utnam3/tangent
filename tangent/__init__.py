@@ -40,6 +40,7 @@ from tangent.utils import Stack
 from tangent.utils import unbroadcast
 from tangent.utils import unreduce
 from tangent.utils import unreduce_like
+from tangent.preaccumulation import preaccumulate
 
 # Imported last to avoid circular imports
 from tangent.grad_util import grad, autodiff, vjp, jvp
