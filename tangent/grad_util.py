@@ -93,15 +93,19 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
   fence.validate(node, inspect.getsource(func))
   body = node.body[0]
 
-  if preaccumulation._has_preaccumulate_decorator(body):
-    mode = 'preaccumulate'
+  preaccumulation.preprocess(body)
 
   node = anf_.anf(node)
   if verbose >= 2:
     print('ANF')
     print(quoting.to_source(node))
 
-  if mode == 'reverse' or mode == 'preaccumulate':
+  if preaccumulation.enabled(body):
+    # TODO: Perform preaccumulation
+    # TODO: Generate calling code depending on mode
+    print("TODO: Perform preaccumulation...")
+
+  if mode == 'reverse':
     node, required, stack = reverse_ad.reverse_ad(body, wrt,
                                                   preserve_result, check_dims)
     if verbose >= 2:

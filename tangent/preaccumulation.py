@@ -31,11 +31,11 @@ def preaccumulate():
   return preacc_wrapper
 
 
-def _has_preaccumulate_decorator(func):
-  has_decorator = False
+def preprocess(func):
+  """Write preaccumulation parameters from decorator to annotation if available."""
 
   resolved_func = anno.getanno(func, 'func')
-  preacc_params = getattr(resolved_func, PREACCUMULATION_FIELD, None)
+  preacc_params = getattr(resolved_func, PREACCUMULATION_FIELD, {'enabled': False})
 
   if preacc_params is not None:
     preaccumulate_decorators = [(i, dec) for i, dec in enumerate(func.decorator_list) if isinstance(dec, gast.Call) and dec.func.attr == preaccumulate.__name__]
@@ -43,13 +43,15 @@ def _has_preaccumulate_decorator(func):
     if len(preaccumulate_decorators) > 1:
       raise ValueError('Multiple preaccumulate decorators on one function are not allowed.')
 
-    has_decorator = len(preaccumulate_decorators) > 0
     # Remove the preaccumulate decorator from the function's decorator list
-    if has_decorator:
+    if len(preaccumulate_decorators) > 0:
       # FIXME: Is this really necessary? Currently the tangent compilation does not work otherwise (NameError)
       del func.decorator_list[preaccumulate_decorators[0][0]]
 
   # Copy preaccumulation parameters from attr to node annotation
   anno.setanno(func, PREACCUMULATION_ANNO, preacc_params)
 
-  return has_decorator
+
+def enabled(node):
+  """Check if preaccumulation is enabled for the node."""
+  return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
