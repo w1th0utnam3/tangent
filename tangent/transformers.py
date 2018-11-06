@@ -172,32 +172,51 @@ class TreeTransformer(gast.NodeTransformer):
     """
     for node in nodes:
       if isinstance(node, gast.AST):
+        # Every visited node may want to prepend/append new nodes
         self.to_prepend.append(deque())
         self.to_append.append(deque())
+
         node = self.visit(node)
+
+        # Recursion over nodes to prepend
         self.visit_statements(self.to_prepend.pop())
+
+        # Add the node itself to list of transformed nodes
         if isinstance(node, gast.AST):
           self.to_insert[-1].append(node)
         elif node:
           self.to_insert[-1].extend(node)
+
+        # Recursion over nodes to append
         self.visit_statements(self.to_append.pop())
       else:
+        # Not sure when this happens
         self.to_insert[-1].append(node)
+
     return self.to_insert[-1]
 
   def generic_visit(self, node):
     is_top = False
+
+    # Check if we're at the root node
     if self._top:
       is_top = True
       self._top = False
+
+    # Iterate over all fields (direct child nodes)
     for field, old_value in gast.iter_fields(node):
+      # Handle field containing list of child nodes
       if isinstance(old_value, list):
+        # Handle bodies of some block statements (if/while/...)
         if (type(node), field) in grammar.BLOCKS:
+          # Fields of blocks introduce their own prepend/append/... regions
           self.to_prepend_block.append(deque())
           self.to_append_block.append(deque())
           self.to_insert.append(deque())
+          # Visit the block's body (recursive, until no new nodes are generated)
           new_values = copy(self.visit_statements(old_value))
           self.to_insert.pop()
+        # Handle children of non-block statements/expressions (names, ops,...)
         else:
           new_values = []
           for value in old_value:
@@ -209,9 +228,13 @@ class TreeTransformer(gast.NodeTransformer):
                 new_values.extend(value)
                 continue
             new_values.append(value)
+
+        # Place stored nodes at the top of current function definition
         if isinstance(node, gast.FunctionDef) and field == 'body':
           new_values.extendleft(self.to_insert_top)
           self.to_insert_top = deque([])
+
+        # Prepend/append stored nodes to current block
         if (type(node), field) in grammar.BLOCKS:
           new_values.extendleft(self.to_prepend_block.pop())
           return_ = None
@@ -220,15 +243,23 @@ class TreeTransformer(gast.NodeTransformer):
           new_values.extend(self.to_append_block.pop())
           if return_:
             new_values.append(return_)
+
+        # Replace the list of child nodes
         old_value[:] = new_values
+
+      # Handle field containing a single node
       elif isinstance(old_value, gast.AST):
+        # Visit child node and update/delete it depending on return value
         new_node = self.visit(old_value)
         if new_node is None:
           delattr(node, field)
         else:
           setattr(node, field, new_node)
+
+    # Removal of nodes is performed in second pass
     if is_top and self.to_remove:
       Remove(self.to_remove).visit(node)
+
     return node
 
 
