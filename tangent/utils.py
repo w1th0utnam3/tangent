@@ -753,8 +753,8 @@ def insert_grad_of(var):
 
 
 class preaccumulate_info:
-  def __init__(self, **kwargs):
-    self.mode = kwargs["mode"]
+  def __init__(self, mode="reverse", **kwargs):
+    self.mode = mode
 
 
 def preaccumulate(mode='reverse'):

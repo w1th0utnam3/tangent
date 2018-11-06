@@ -64,4 +64,5 @@ BLOCKS = (
     (gast.While, 'orelse'),
     (gast.If, 'body'),
     (gast.If, 'orelse'),
+    (gast.With, 'body')
 )
