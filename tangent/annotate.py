@@ -302,7 +302,7 @@ class Unused(gast.NodeVisitor):
 
 
 def unused(node):
-  """Find unused definitions that can be remove.
+  """Find unused definitions that can be removed.
 
   This runs reaching definitions analysis followed by a walk over the AST to
   find all variable definitions that are not used later on.
