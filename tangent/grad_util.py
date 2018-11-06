@@ -101,7 +101,7 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
     print('ANF')
     print(quoting.to_source(node))
 
-  if mode == 'reverse':
+  if mode == 'reverse' or mode == 'preaccumulate':
     node, required, stack = reverse_ad.reverse_ad(body, wrt,
                                                   preserve_result, check_dims)
     if verbose >= 2:
@@ -115,9 +115,6 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
       print('MOTION')
       print(quoting.to_source(node))
   elif mode == 'forward':
-    node, required = forward_ad.forward_ad(body, wrt, preserve_result,
-                                           check_dims)
-  elif mode == 'preaccumulate':
     node, required = forward_ad.forward_ad(body, wrt, preserve_result,
                                            check_dims)
 
