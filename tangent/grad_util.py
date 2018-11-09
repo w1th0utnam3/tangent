@@ -103,7 +103,7 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
   if preaccumulation.enabled(body):
     # TODO: Perform preaccumulation
     # TODO: Generate calling code depending on mode
-    print("TODO: Perform preaccumulation...")
+    preaccumulation.function_to_dag(body)
 
   if mode == 'reverse':
     node, required, stack = reverse_ad.reverse_ad(body, wrt,

@@ -55,3 +55,160 @@ def preprocess(func):
 def enabled(node):
   """Check if preaccumulation is enabled for the node."""
   return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
+
+
+class Node(object):
+  """A node in the DAG."""
+  __slots__ = ['next', 'prev', 'name', 'value', 'stmnt']
+
+  def __init__(self, stmnt):
+    self.next = set()
+    self.prev = set()
+
+    self.name = None
+    self.value = None
+    self.stmnt = stmnt
+
+  def __repr__(self):
+    return "<DAG node: {}>".format(self.stmnt)
+
+  def __str__(self):
+    string_repr = ""
+    if isinstance(self.name, gast.Name):
+      string_repr = str(self.name.id)
+
+    if string_repr != "" and self.value is not None:
+      string_repr += ": "
+
+    if isinstance(self.value, gast.Name):
+      string_repr += str(self.value.id)
+    if isinstance(self.value, gast.BinOp):
+      string_repr += str(type(self.value.op).__name__)
+    if isinstance(self.value, gast.Call):
+      string_repr += str(self.value.func.attr)
+    if isinstance(self.value, gast.Tuple):
+      string_repr += str('Tuple')
+
+    if string_repr == "":
+      if isinstance(self.stmnt, gast.Name):
+        string_repr = str(self.stmnt.id)
+      elif isinstance(self.stmnt, gast.Num):
+        string_repr = str(self.stmnt.n)
+      else:
+        string_repr = str(self.stmnt)
+
+    return string_repr
+
+
+def function_to_dag(func):
+  """Creates a DAG from a function definition."""
+
+  print("TODO: Perform preaccumulation...")
+  root, dag_nodes = create_dag(func.body, func.args.args, None, None)
+  print("")
+  print(dag_to_dot(dag_nodes))
+  print("")
+
+def create_dag(nodes, inputs, outputs, wrt):
+  # It is assumed that the nodes went through ANF transformation (e.g. no
+  # nested binary operations)
+
+  root = Node("root")
+  dag_nodes = {root}
+
+  # Stores the node which last assigned any value to a given name
+  last_assign = {}
+
+  # Add all inputs to the DAG
+  for input in inputs:
+    input_node = Node(input)
+
+    input_node.prev.add(root)
+    root.next.add(input_node)
+
+    last_assign[input.id] = input_node
+    dag_nodes.add(input_node)
+
+  # Create DAG nodes for all statements
+  for node in nodes:
+    dag_node = Node(node)
+
+    node_name = None
+    node_value = None
+
+    node_inputs = []
+
+    if isinstance(node, gast.Assign):
+      # Get the target of the assign statement
+      if len(node.targets) > 1:
+        raise RuntimeError('Tuple unpacking currently not supported.')
+      target = node.targets[0]
+
+      node_name = target
+      node_value = node.value
+
+      if target.id in last_assign:
+        raise RuntimeError('Input has to be in ANF. Cannot assign repeatedly '
+                            'to the same variable!')
+
+      last_assign[target.id] = dag_node
+    elif isinstance(node, gast.Return):
+      node_value = node.value
+    else:
+      raise TypeError('Encountered unsupported node type "{}" of node "{}" '
+                      'during DAG creation.'.format(type(node).__name__,
+                                                    node))
+
+    dag_node.name = node_name
+    dag_node.value = node_value
+
+    # Collect inputs to the current node
+    node_inputs = []
+    if isinstance(node_value, gast.BinOp):
+      node_inputs += [node_value.left, node_value.right]
+    elif isinstance(node_value, gast.Call):
+      node_inputs += node_value.args
+    elif isinstance(node_value, gast.Tuple):
+      node_inputs += node_value.elts
+    elif isinstance(node_value, gast.Name):
+      node_inputs += [node_value]
+    else:
+      raise TypeError('Encountered unsupported node type "{}" of node "{}" '
+                      'during DAG creation.'.format(type(node_value).__name__, 
+                                                    node_value))
+
+    # Create links to the inputs
+    for input in node_inputs:
+      if isinstance(input, gast.Name):
+        if input.id not in last_assign:
+          raise RuntimeError('Usage of undeclared variable "{}" in an '
+                              'expression.'.format(input.id))
+        dag_node.prev.add(last_assign[input.id])
+        last_assign[input.id].next.add(dag_node)
+      elif isinstance(input, gast.Num):
+        if input.n in last_assign:
+          num_node = last_assign[input.n]
+        else:
+          num_node = Node(input)
+          dag_nodes.add(num_node)
+        dag_node.prev.add(num_node)
+        num_node.next.add(dag_node)
+      else:
+        raise TypeError('Unsupported type "{}" of node '
+                        '"{}"'.format(type(input).__name__, input))
+
+    dag_nodes.add(dag_node)
+
+  return root, dag_nodes
+
+def dag_to_dot(dag_nodes):
+  strings = []
+
+  strings += ["digraph G {"]
+  for node in dag_nodes:
+    for succ in node.next:
+      strings += ['\t"{}" -> "{}"'.format(str(node), str(succ))]
+  strings += ["}"]
+
+  dot_string = '\n'.join(strings)
+  return dot_string
