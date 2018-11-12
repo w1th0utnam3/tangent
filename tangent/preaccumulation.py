@@ -82,7 +82,7 @@ class Node(object):
 
     if isinstance(self.value, gast.Name):
       string_repr += str(self.value.id)
-    if isinstance(self.value, gast.BinOp):
+    if isinstance(self.value, gast.BinOp) or isinstance(self.value, gast.UnaryOp):
       string_repr += str(type(self.value.op).__name__)
     if isinstance(self.value, gast.Call):
       string_repr += str(self.value.func.attr)
@@ -113,7 +113,7 @@ def create_dag(nodes, inputs, outputs, wrt):
   # It is assumed that the nodes went through ANF transformation (e.g. no
   # nested binary operations)
 
-  root = Node("root")
+  root = Node("Inputs")
   dag_nodes = {root}
 
   # Stores the node which last assigned any value to a given name
@@ -162,10 +162,12 @@ def create_dag(nodes, inputs, outputs, wrt):
     dag_node.name = node_name
     dag_node.value = node_value
 
-    # Collect inputs to the current node
+    # Collect inputs of the current node
     node_inputs = []
     if isinstance(node_value, gast.BinOp):
       node_inputs += [node_value.left, node_value.right]
+    elif isinstance(node_value, gast.UnaryOp):
+      node_inputs += [node_value.operand]
     elif isinstance(node_value, gast.Call):
       node_inputs += node_value.args
     elif isinstance(node_value, gast.Tuple):
@@ -177,7 +179,7 @@ def create_dag(nodes, inputs, outputs, wrt):
                       'during DAG creation.'.format(type(node_value).__name__, 
                                                     node_value))
 
-    # Create links to the inputs
+    # Link inputs to the current node
     for input in node_inputs:
       if isinstance(input, gast.Name):
         if input.id not in last_assign:
@@ -197,6 +199,7 @@ def create_dag(nodes, inputs, outputs, wrt):
         raise TypeError('Unsupported type "{}" of node '
                         '"{}"'.format(type(input).__name__, input))
 
+    # Add the current node to the DAG
     dag_nodes.add(dag_node)
 
   return root, dag_nodes
