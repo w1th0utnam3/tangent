@@ -59,18 +59,16 @@ def enabled(node):
 
 class Node(object):
   """A node in the DAG."""
-  __slots__ = ['next', 'prev', 'name', 'value', 'stmnt']
+  __slots__ = ['idx', 'name', 'value', 'stmnt']
 
   def __init__(self, stmnt):
-    self.next = set()
-    self.prev = set()
-
+    self.idx = None
     self.name = None
     self.value = None
     self.stmnt = stmnt
 
   def __repr__(self):
-    return "<DAG node: {}>".format(self.stmnt)
+    return '<DAG node: {}>'.format(self.stmnt)
 
   def __str__(self):
     string_repr = ""
@@ -100,38 +98,150 @@ class Node(object):
     return string_repr
 
 
+class Edge(object):
+  __slots__ = ['idx', 'source', 'target', 'value']
+
+  def __init__(self, value = None):
+    self.idx = None
+    self.source = None
+    self.target = None
+    self.value = value
+
+
+class DiGraph(object):
+  def __init__(self):
+    self.__nodes = {}
+    self.__edges = {}
+    self.__out_edges = {}
+    self.__in_edges = {}
+    self.__next_id = 0
+
+  def insert_node(self, node):
+    idx = self.__next_id
+    node.idx = idx
+
+    self.__nodes[idx] = node
+    self.__next_id += 1
+
+    self.__out_edges[idx] = set()
+    self.__in_edges[idx] = set()
+    return idx
+
+  def create_edge(self, source, target, value = None):
+    edge = Edge(value)
+    assert source in self.__nodes and target in self.__nodes
+    edge.source = source
+    edge.target = target
+
+    idx = self.__next_id
+    edge.idx = idx
+
+    self.__edges[idx] = edge
+    self.__next_id += 1
+
+    self.__out_edges[source].add(idx)
+    self.__in_edges[target].add(idx)
+
+    return idx
+
+  def pop_node(self, node_id):
+    def pop_all_edges(edge_set):
+      while not edge_set.empty():
+        edge_id = next(iter(edge_set))
+        self.pop_edge(edge_id)
+
+    pop_all_edges(self.__out_edges[node_id])
+    pop_all_edges(self.__in_edges[node_id])
+    
+    del self.__out_edges[node_id]
+    del self.__in_edges[node_id]
+
+    return self.__nodes.pop(node_id)
+
+  def pop_edge(self, edge_id):
+    edge = self.__edges.pop(edge_id)
+    self.__out_edges[edge.source].remove(edge)
+    self.__in_edges[edge.target].remove(edge)
+    return edge
+
+  def node(self, node_id):
+    return self.__nodes[node_id]
+
+  def edge(self, edge_id):
+    return self.__edges[edge_id]
+
+  def nodes(self):
+    def node_gen():
+      for n in self.__nodes.values():
+        yield n
+    
+    return node_gen()
+
+  def edges(self):
+    def edge_gen():
+      for e in self.__edges.values():
+        yield e
+
+    return edge_gen()
+
+  def out_edges(self, node_id):
+    def out_edge_gen():
+      for e in self.__out_edges[node_id]:
+        yield self.edge(e)
+    
+    return out_edge_gen()
+
+  def in_edges(self, node_id):
+    def in_edge_gen():
+      for e in self.__in_edges[node_id]:
+        yield self.edge(e)
+
+    return in_edge_gen()
+
+  def out_nodes(self, node_id):
+    def out_node_gen():
+      for e in self.out_edges(node_id):
+        yield self.node(e.target)
+    
+    return out_node_gen()
+
+  def in_nodes(self, node_id):
+    def in_node_gen():
+      for e in self.in_edges(node_id):
+        yield self.node(e.source)
+
+    return in_node_gen()
+
 def function_to_dag(func):
   """Creates a DAG from a function definition."""
 
   print("TODO: Perform preaccumulation...")
-  root, dag_nodes = create_dag(func.body, func.args.args, None, None)
+  dag = create_dag(func.body, func.args.args, None, None)
   print("")
-  print(dag_to_dot(dag_nodes))
+  print(dag_to_dot(dag))
   print("")
 
 def create_dag(nodes, inputs, outputs, wrt):
   # It is assumed that the nodes went through ANF transformation (e.g. no
   # nested binary operations)
 
-  root = Node("Inputs")
-  dag_nodes = {root}
+  dag = DiGraph()
+  root = dag.insert_node(Node('Inputs'))
 
   # Stores the node which last assigned any value to a given name
   last_assign = {}
 
   # Add all inputs to the DAG
   for input in inputs:
-    input_node = Node(input)
+    input_id = dag.insert_node(Node(input))
+    dag.create_edge(root, input_id)
 
-    input_node.prev.add(root)
-    root.next.add(input_node)
-
-    last_assign[input.id] = input_node
-    dag_nodes.add(input_node)
+    last_assign[input.id] = input_id
 
   # Create DAG nodes for all statements
   for node in nodes:
     dag_node = Node(node)
+    dag_node_id = dag.insert_node(dag_node)
 
     node_name = None
     node_value = None
@@ -151,7 +261,7 @@ def create_dag(nodes, inputs, outputs, wrt):
         raise RuntimeError('Input has to be in ANF. Cannot assign repeatedly '
                             'to the same variable!')
 
-      last_assign[target.id] = dag_node
+      last_assign[target.id] = dag_node_id
     elif isinstance(node, gast.Return):
       node_value = node.value
     else:
@@ -185,31 +295,27 @@ def create_dag(nodes, inputs, outputs, wrt):
         if input.id not in last_assign:
           raise RuntimeError('Usage of undeclared variable "{}" in an '
                               'expression.'.format(input.id))
-        dag_node.prev.add(last_assign[input.id])
-        last_assign[input.id].next.add(dag_node)
+        dag.create_edge(last_assign[input.id], dag_node_id)
       elif isinstance(input, gast.Num):
         if input.n in last_assign:
-          num_node = last_assign[input.n]
+          num_node_id = last_assign[input.n]
         else:
-          num_node = Node(input)
-          dag_nodes.add(num_node)
-        dag_node.prev.add(num_node)
-        num_node.next.add(dag_node)
+          num_node_id = dag.insert_node(Node(input))
+        dag.create_edge(num_node_id, dag_node_id)
       else:
         raise TypeError('Unsupported type "{}" of node '
                         '"{}"'.format(type(input).__name__, input))
 
-    # Add the current node to the DAG
-    dag_nodes.add(dag_node)
+  return dag
 
   return root, dag_nodes
 
-def dag_to_dot(dag_nodes):
+def dag_to_dot(dag):
   strings = []
 
   strings += ["digraph G {"]
-  for node in dag_nodes:
-    for succ in node.next:
+  for node in dag.nodes():
+    for succ in dag.out_nodes(node.idx):
       strings += ['\t"{}" -> "{}"'.format(str(node), str(succ))]
   strings += ["}"]
 
