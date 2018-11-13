@@ -14,20 +14,28 @@
 """Functions to perform preaccumulation on the AST."""
 
 from __future__ import absolute_import
+from copy import deepcopy
 import gast
 
+import tangent
 from tangent import annotations as anno
 from tangent import dag as dag_
+from tangent import forward_ad
+from tangent import grads
+from tangent import naming
+from tangent import quoting
+from tangent import reverse_ad
+from tangent import utils
 
 PREACCUMULATION_ANNO = 'preaccumulation'
 PREACCUMULATION_FIELD = '_preaccumulation'
 
 
-def preaccumulate():
+def preaccumulate(mode='full'):
   """Decorator to mark an entire function for preaccumulation."""
   def preacc_wrapper(func):
     # TODO: Use attr to store any parameters
-    setattr(func, PREACCUMULATION_FIELD, {'enabled': True})
+    setattr(func, PREACCUMULATION_FIELD, {'enabled': True, 'mode': mode})
     return func
 
   return preacc_wrapper
@@ -52,6 +60,7 @@ def preprocess(func):
 
   # Copy preaccumulation parameters from attr to node annotation
   anno.setanno(func, PREACCUMULATION_ANNO, preacc_params)
+  return preacc_params
 
 
 def enabled(node):
@@ -59,14 +68,71 @@ def enabled(node):
   return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
 
 
-def function_to_dag(func):
-  """Creates a DAG from a function definition."""
+def from_decorator(node, wrt, check_dims, verbose=0):
+  """Perform preaccumulation on a node that was marked for preaccumulation using the decorator."""
 
-  print("TODO: Perform preaccumulation...")
+  # TODO: Get mode, wrt, verbose, etc. params from global differentiation
+  # TODO: What about nested function calls? Nested preaccumulate function calls?
+  preacc_params = anno.getanno(node, PREACCUMULATION_ANNO)
+  
+  if preacc_params['enabled']:
+    preacc_mode = preacc_params['mode']
+    if preacc_mode == 'forward':
+      if verbose >= 0:
+        print('Performing forward preaccumulation')
+
+      func = anno.getanno(node, 'func')
+      # Create working copy to avoid changing the original nodes
+      forward_node = deepcopy(node)
+      forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
+                                                     check_dims)
+
+      # Template used to accumulate the Jacobian
+      def pri_template(_stack, x):
+        # TODO: Init grad for all active arguments to tangent function
+        # TODO: Loop over all arguments
+        # TODO: Loop over all entries of arguments, setting it to 1
+        # TODO: Push every result onto stack
+
+        # FIXME: Assuming that x is a scalar
+        dx = tangent.init_grad(x)
+        dx = 1
+        dz, z = _tgtx(x, dx)
+        tangent.push(_stack, dz, 'op_id')
+        return z
+
+      # Template used to restore the Jacobian
+      def adj_template(_stack, bz, x):
+        dz = tangent.pop(_stack, 'op_id')
+        bx = dz * bz
+        return bx,
+
+      pri = quoting.parse_function(pri_template).body[0]
+      pri.name = naming.primal_name(func, wrt)
+
+      adj = quoting.parse_function(adj_template).body[0]
+      adj.name = naming.adjoint_name(func, wrt)
+
+      # TODO: Dynamic tangent name
+      # TODO: What to do with op_id? Have a look at how reverse mode treats for loops
+      # TODO: Split and joint motion?
+      forward_node = gast.Module(body=[forward_node.body[0], pri, adj])
+      return forward_node, []
+    elif preacc_mode == 'reverse':
+      raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
+                                'yet implemented!')
+    elif preacc_mode == 'full':
+      function_to_dag(node)
+
+
+def function_to_dag(func):
+  """Create a DAG from a function definition."""
+
+  print('TODO: Perform preaccumulation...')
   dag = create_dag(func.body, func.args.args, None, None)
-  print("")
+  print('')
   print(dag_to_dot(dag))
-  print("")
+  print('')
 
 
 def create_dag(nodes, inputs, outputs, wrt):

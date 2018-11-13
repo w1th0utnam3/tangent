@@ -93,7 +93,7 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
   fence.validate(node, inspect.getsource(func))
   body = node.body[0]
 
-  preaccumulation.preprocess(body)
+  preacc_params = preaccumulation.preprocess(body)
 
   node = anf_.anf(node)
   if verbose >= 2:
@@ -101,9 +101,18 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
     print(quoting.to_source(node))
 
   if preaccumulation.enabled(body):
-    # TODO: Perform preaccumulation
-    # TODO: Generate calling code depending on mode
-    preaccumulation.function_to_dag(body)
+    # TODO: Generate calling/driver code depending on mode
+    if verbose >= 2:
+      print('PREACC MODE: "{}"'.format(preacc_params['mode']))
+
+    if not preacc_params['mode'] == mode:
+      node, required = preaccumulation.from_decorator(body, wrt, check_dims, verbose)
+      return node, required
+    else:
+      print('WARNING: Preacc mode is identical to global AD mode. '
+            'Preaccumulation will be disabled.')
+
+    print('')
 
   if mode == 'reverse':
     node, required, stack = reverse_ad.reverse_ad(body, wrt,
