@@ -12,10 +12,12 @@
 #      See the License for the specific language governing permissions and
 #      limitations under the License.
 """Functions to perform preaccumulation on the AST."""
+
 from __future__ import absolute_import
 import gast
 
 from tangent import annotations as anno
+from tangent import dag as dag_
 
 PREACCUMULATION_ANNO = 'preaccumulation'
 PREACCUMULATION_FIELD = '_preaccumulation'
@@ -57,161 +59,6 @@ def enabled(node):
   return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
 
 
-class Node(object):
-  """A node in the DAG."""
-  __slots__ = ['idx', 'name', 'value', 'stmnt']
-
-  def __init__(self, stmnt):
-    self.idx = None
-    self.name = None
-    self.value = None
-    self.stmnt = stmnt
-
-  def __repr__(self):
-    return '<DAG node: {}>'.format(self.stmnt)
-
-  def __str__(self):
-    string_repr = ""
-    if isinstance(self.name, gast.Name):
-      string_repr = str(self.name.id)
-
-    if string_repr != "" and self.value is not None:
-      string_repr += ": "
-
-    if isinstance(self.value, gast.Name):
-      string_repr += str(self.value.id)
-    if isinstance(self.value, gast.BinOp) or isinstance(self.value, gast.UnaryOp):
-      string_repr += str(type(self.value.op).__name__)
-    if isinstance(self.value, gast.Call):
-      string_repr += str(self.value.func.attr)
-    if isinstance(self.value, gast.Tuple):
-      string_repr += str('Tuple')
-
-    if string_repr == "":
-      if isinstance(self.stmnt, gast.Name):
-        string_repr = str(self.stmnt.id)
-      elif isinstance(self.stmnt, gast.Num):
-        string_repr = str(self.stmnt.n)
-      else:
-        string_repr = str(self.stmnt)
-
-    return string_repr
-
-
-class Edge(object):
-  __slots__ = ['idx', 'source', 'target', 'value']
-
-  def __init__(self, value = None):
-    self.idx = None
-    self.source = None
-    self.target = None
-    self.value = value
-
-
-class DiGraph(object):
-  def __init__(self):
-    self.__nodes = {}
-    self.__edges = {}
-    self.__out_edges = {}
-    self.__in_edges = {}
-    self.__next_id = 0
-
-  def insert_node(self, node):
-    idx = self.__next_id
-    node.idx = idx
-
-    self.__nodes[idx] = node
-    self.__next_id += 1
-
-    self.__out_edges[idx] = set()
-    self.__in_edges[idx] = set()
-    return idx
-
-  def create_edge(self, source, target, value = None):
-    edge = Edge(value)
-    assert source in self.__nodes and target in self.__nodes
-    edge.source = source
-    edge.target = target
-
-    idx = self.__next_id
-    edge.idx = idx
-
-    self.__edges[idx] = edge
-    self.__next_id += 1
-
-    self.__out_edges[source].add(idx)
-    self.__in_edges[target].add(idx)
-
-    return idx
-
-  def pop_node(self, node_id):
-    def pop_all_edges(edge_set):
-      while not edge_set.empty():
-        edge_id = next(iter(edge_set))
-        self.pop_edge(edge_id)
-
-    pop_all_edges(self.__out_edges[node_id])
-    pop_all_edges(self.__in_edges[node_id])
-    
-    del self.__out_edges[node_id]
-    del self.__in_edges[node_id]
-
-    return self.__nodes.pop(node_id)
-
-  def pop_edge(self, edge_id):
-    edge = self.__edges.pop(edge_id)
-    self.__out_edges[edge.source].remove(edge)
-    self.__in_edges[edge.target].remove(edge)
-    return edge
-
-  def node(self, node_id):
-    return self.__nodes[node_id]
-
-  def edge(self, edge_id):
-    return self.__edges[edge_id]
-
-  def nodes(self):
-    def node_gen():
-      for n in self.__nodes.values():
-        yield n
-    
-    return node_gen()
-
-  def edges(self):
-    def edge_gen():
-      for e in self.__edges.values():
-        yield e
-
-    return edge_gen()
-
-  def out_edges(self, node_id):
-    def out_edge_gen():
-      for e in self.__out_edges[node_id]:
-        yield self.edge(e)
-    
-    return out_edge_gen()
-
-  def in_edges(self, node_id):
-    def in_edge_gen():
-      for e in self.__in_edges[node_id]:
-        yield self.edge(e)
-
-    return in_edge_gen()
-
-  def out_nodes(self, node_id):
-    def out_node_gen():
-      for e in self.out_edges(node_id):
-        yield self.node(e.target)
-    
-    return out_node_gen()
-
-  def in_nodes(self, node_id):
-    def in_node_gen():
-      for e in self.in_edges(node_id):
-        yield self.node(e.source)
-
-    return in_node_gen()
-
 def function_to_dag(func):
   """Creates a DAG from a function definition."""
 
@@ -221,27 +68,28 @@ def function_to_dag(func):
   print(dag_to_dot(dag))
   print("")
 
+
 def create_dag(nodes, inputs, outputs, wrt):
   # It is assumed that the nodes went through ANF transformation (e.g. no
   # nested binary operations)
 
-  dag = DiGraph()
-  root = dag.insert_node(Node('Inputs'))
+  dag = dag_.DiGraph()
+  root = dag.add_node(dag_.Node('Inputs'))
 
   # Stores the node which last assigned any value to a given name
   last_assign = {}
 
   # Add all inputs to the DAG
   for input in inputs:
-    input_id = dag.insert_node(Node(input))
+    input_id = dag.add_node(dag_.Node(input))
     dag.create_edge(root, input_id)
 
     last_assign[input.id] = input_id
 
   # Create DAG nodes for all statements
   for node in nodes:
-    dag_node = Node(node)
-    dag_node_id = dag.insert_node(dag_node)
+    dag_node = dag_.Node(node)
+    dag_node_id = dag.add_node(dag_node)
 
     node_name = None
     node_value = None
@@ -300,7 +148,7 @@ def create_dag(nodes, inputs, outputs, wrt):
         if input.n in last_assign:
           num_node_id = last_assign[input.n]
         else:
-          num_node_id = dag.insert_node(Node(input))
+          num_node_id = dag.add_node(dag_.Node(input))
         dag.create_edge(num_node_id, dag_node_id)
       else:
         raise TypeError('Unsupported type "{}" of node '
@@ -311,12 +159,40 @@ def create_dag(nodes, inputs, outputs, wrt):
   return root, dag_nodes
 
 def dag_to_dot(dag):
+  """Create a dot file representation of the given DAG."""
   strings = []
+
+  def print_node(node):
+    string_repr = ""
+    if isinstance(node.name, gast.Name):
+      string_repr = str(node.name.id)
+
+    if string_repr != "" and node.value is not None:
+      string_repr += ": "
+
+    if isinstance(node.value, gast.Name):
+      string_repr += str(node.value.id)
+    if isinstance(node.value, gast.BinOp) or isinstance(node.value, gast.UnaryOp):
+      string_repr += str(type(node.value.op).__name__)
+    if isinstance(node.value, gast.Call):
+      string_repr += str(node.value.func.attr)
+    if isinstance(node.value, gast.Tuple):
+      string_repr += str('Tuple')
+
+    if string_repr == "":
+      if isinstance(node.stmnt, gast.Name):
+        string_repr = str(node.stmnt.id)
+      elif isinstance(node.stmnt, gast.Num):
+        string_repr = str(node.stmnt.n)
+      else:
+        string_repr = str(node.stmnt)
+
+    return string_repr
 
   strings += ["digraph G {"]
   for node in dag.nodes():
-    for succ in dag.out_nodes(node.idx):
-      strings += ['\t"{}" -> "{}"'.format(str(node), str(succ))]
+    for succ in dag.succ_nodes(node.id):
+      strings += ['\t"{}" -> "{}"'.format(print_node(node), print_node(succ))]
   strings += ["}"]
 
   dot_string = '\n'.join(strings)
