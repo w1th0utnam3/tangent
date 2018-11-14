@@ -25,6 +25,7 @@ from tangent import grads
 from tangent import naming
 from tangent import quoting
 from tangent import reverse_ad
+from tangent import template
 from tangent import utils
 
 PREACCUMULATION_ANNO = 'preaccumulation'
@@ -78,6 +79,8 @@ def from_decorator(node, wrt, check_dims, verbose=0):
   if preacc_params['enabled']:
     preacc_mode = preacc_params['mode']
     if preacc_mode == 'forward':
+      # Forward mode preaccumulation implies that we have an outer reverse mode
+
       if verbose >= 0:
         print('Performing forward preaccumulation')
 
@@ -86,9 +89,15 @@ def from_decorator(node, wrt, check_dims, verbose=0):
       forward_node = deepcopy(node)
       forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
                                                      check_dims)
+      tngt = forward_node.body[0]
 
-      # Template used to accumulate the Jacobian
-      def pri_template(_stack, x):
+      tangent_name = tngt.name
+      primal_name = naming.primal_name(func, wrt)
+      adjoint_name = naming.adjoint_name(func, wrt)
+
+      # Template used to accumulate the Jacobian in primal section
+      def primal_template(_primal, _tangent):
+        def _primal(_stack, x):
         # TODO: Init grad for all active arguments to tangent function
         # TODO: Loop over all arguments
         # TODO: Loop over all entries of arguments, setting it to 1
@@ -97,31 +106,40 @@ def from_decorator(node, wrt, check_dims, verbose=0):
         # FIXME: Assuming that x is a scalar
         dx = tangent.init_grad(x)
         dx = 1
-        dz, z = _tgtx(x, dx)
+          dz, z = _tangent(x, dx)
         tangent.push(_stack, dz, 'op_id')
         return z
 
-      # Template used to restore the Jacobian
-      def adj_template(_stack, bz, x):
+      pri = template.replace(
+        primal_template,
+        replace_grad=template.Replace.NONE,
+        namer=None,
+        _primal=primal_name,
+        _tangent=tangent_name
+      )[0]
+
+      # Template used to restore the Jacobian in adjoint section
+      def adjoint_template(_adjoint):
+        def _adjoint(_stack, bz, x):
         dz = tangent.pop(_stack, 'op_id')
         bx = dz * bz
         return bx,
 
-      pri = quoting.parse_function(pri_template).body[0]
-      pri.name = naming.primal_name(func, wrt)
+      adj = template.replace(
+        adjoint_template,
+        replace_grad=template.Replace.NONE,
+        namer=None,
+        _adjoint=adjoint_name
+      )[0]
 
-      adj = quoting.parse_function(adj_template).body[0]
-      adj.name = naming.adjoint_name(func, wrt)
-
-      # TODO: Dynamic tangent name
-      # TODO: What to do with op_id? Have a look at how reverse mode treats for loops
-      # TODO: Split and joint motion?
-      forward_node = gast.Module(body=[forward_node.body[0], pri, adj])
+      # TODO: What to do with op_id? Have a look at how reverse mode treats for-loops
+      # TODO: Properly support split and joint motion?
+      forward_node = gast.Module(body=[tngt, pri, adj])
       return forward_node, []
     elif preacc_mode == 'reverse':
       raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
                                 'yet implemented!')
-    elif preacc_mode == 'full':
+    elif preacc_mode == 'cross_country':
       function_to_dag(node)
 
 
