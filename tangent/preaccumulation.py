@@ -87,43 +87,78 @@ def from_decorator(node, wrt, check_dims, verbose=0):
       func = anno.getanno(node, 'func')
       # Create working copy to avoid changing the original nodes
       forward_node = deepcopy(node)
+      # Generate tangent of the function
       forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
                                                      check_dims)
       tngt = forward_node.body[0]
 
+      # Get names of all involved functions
+      func_name = func.__name__
       tangent_name = tngt.name
       primal_name = naming.primal_name(func, wrt)
       adjoint_name = naming.adjoint_name(func, wrt)
 
-      # Template used to accumulate the Jacobian in primal section
-      def primal_template(_primal, _tangent):
-        def _primal(_stack, x):
-        # TODO: Init grad for all active arguments to tangent function
-        # TODO: Loop over all arguments
-        # TODO: Loop over all entries of arguments, setting it to 1
-        # TODO: Push every result onto stack
+      # All arguments of original primal
+      func_args = node.args.args
+      # Active primal arguments
+      active_args = [func_args[i] for i in wrt]
+      # All arguments of the tangent
+      tangent_args = tngt.args.args
 
-        # FIXME: Assuming that x is a scalar
-        dx = tangent.init_grad(x)
-        dx = 1
-          dz, z = _tangent(x, dx)
-        tangent.push(_stack, dz, 'op_id')
-        return z
+      assert len(func_args) + len(active_args) == len(tangent_args)
+
+      # Tangents of all active variables (dx, ...)
+      tangents = tangent_args[len(func_args):]
+
+      assert [arg.id for arg in func_args + tangents] == [arg.id for arg in tangent_args]
+
+      # Template for driver used to accumulate the Jacobian in primal section
+      def primal_template(_args, _active_args, _tangents, _primal_call, _tangent_call, _dz, _z):
+        def _primal_call(_stack, _args):
+          # FIXME: Generate unique names for the local variables?
+          gradients = tangent.init_grad([_active_args])
+
+          n_jac_pushes = 0
+          # FIXME: Support for non-scalar arguments
+          for i in range(len(gradients)):
+            gradients[i] = 1
+            _dz, _z = _tangent_call(_args, *gradients)
+            tangent.push(_stack, _dz, 'op_id')
+            n_jac_pushes += 1
+            gradients[i] = 0
+          tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
+          tangent.push(_stack, _z, 'result_id')
+          return _z
 
       pri = template.replace(
         primal_template,
         replace_grad=template.Replace.NONE,
         namer=None,
-        _primal=primal_name,
-        _tangent=tangent_name
+        _args=func_args,
+        _active_args=active_args,
+        _tangents=tangents,
+        _primal_call=primal_name,
+        _tangent_call=tangent_name,
+        _dz='_d{}'.format(func_name),
+        _z='_{}'.format(func_name)
       )[0]
 
-      # Template used to restore the Jacobian in adjoint section
+      if verbose >= 2:
+        print("Jacobian accumulation primal driver:")
+        print(quoting.to_source(pri))
+
+      # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
       def adjoint_template(_adjoint):
-        def _adjoint(_stack, bz, x):
-        dz = tangent.pop(_stack, 'op_id')
-        bx = dz * bz
-        return bx,
+        def _adjoint(_stack, bz, *args):
+          # FIXME: Assumes that original func only has one scalar output (z -> bz)
+          _bzs = []
+          result = tangent.pop(_stack, 'result_id')
+          n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
+          for i in range(n_jac_pushes):
+            dz = tangent.pop(_stack, 'op_id')
+            # FIXME: For higher dimensions: dz * bz or bz * dz?
+            _bzs.append(dz * bz)
+          return tuple(reversed(_bzs)) + (result,)
 
       adj = template.replace(
         adjoint_template,
@@ -131,6 +166,10 @@ def from_decorator(node, wrt, check_dims, verbose=0):
         namer=None,
         _adjoint=adjoint_name
       )[0]
+
+      if verbose >= 2:
+        print("Jacobian evaluation adjoint driver:")
+        print(quoting.to_source(adj))
 
       # TODO: What to do with op_id? Have a look at how reverse mode treats for-loops
       # TODO: Properly support split and joint motion?
@@ -226,7 +265,7 @@ def create_dag(nodes, inputs, outputs, wrt):
       if isinstance(input, gast.Name):
         if input.id not in last_assign:
           raise RuntimeError('Usage of undeclared variable "{}" in an '
-                              'expression.'.format(input.id))
+                             'expression.'.format(input.id))
         dag.create_edge(last_assign[input.id], dag_node_id)
       elif isinstance(input, gast.Num):
         if input.n in last_assign:
@@ -240,7 +279,60 @@ def create_dag(nodes, inputs, outputs, wrt):
 
   return dag
 
-  return root, dag_nodes
+partials = {}
+partial_ = grads.create_register(partials)
+
+
+@partial_(gast.Name)
+def pname(z, x):
+  d[z,x] = d[x]
+
+
+@partial_(gast.Num)
+def pnum(z, x):
+  d[z,x] = tangent.init_grad(x)
+
+
+@partial_(gast.Add)
+def tadd(z, x, y):
+  d[z,x] = d[x]
+  d[z,y] = d[y]
+
+
+@partial_(gast.Mult)
+def tmult(z, x, y):
+  d[z,x] = d[x] * y
+  d[z,y] = x * d[y]
+
+
+@partial_(gast.Sub)
+def tsub(z, x, y):
+  d[z,x] = d[x] 
+  d[z,y] = - d[y]
+
+
+@partial_(gast.Div)
+def tdiv(z, x, y):
+  d[z,x] = (d[x] * y) / (y * y)
+  d[z,y] = (- x * d[y]) / (y * y)
+
+
+# FIXME: Support for active exponent?
+@partial_(gast.Pow)
+def tpow(z, x, y):
+  d[z,x] = y * (x ** (y - 1.0)) * d[x]
+
+
+@partial_(gast.USub)
+def tusub(z, x):
+  d[z,x] = -d[x]
+
+def dag_to_ldag(dag_nodes):
+  for node in dag_next:
+    while not node.prev.empty():
+      pred = node.prev.pop()
+  pass
+
 
 def dag_to_dot(dag):
   """Create a dot file representation of the given DAG."""
