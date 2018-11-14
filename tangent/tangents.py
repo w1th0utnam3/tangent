@@ -106,6 +106,7 @@ def tdiv(z, x, y):
   d[z] = (d[x] * y - x * d[y]) / (y * y)
 
 
+# FIXME: Support for active exponent?
 @tangent_(gast.Pow)
 def tpow(z, x, y):
   d[z] = y * (x ** (y - 1.0)) * d[x]
@@ -229,8 +230,7 @@ def tsum(y, x, axis=None, dtype=None, keepdims=False):
 
 
 @tangent_(numpy.mean)
-def tmean(
-    y, x, axis=None, dtype=None, keepdims=False):
+def tmean(y, x, axis=None, dtype=None, keepdims=False):
   d[y] = numpy.mean(d[x], axis=axis, dtype=dtype, keepdims=keepdims)
 
 
