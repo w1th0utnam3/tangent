@@ -148,23 +148,32 @@ def from_decorator(node, wrt, check_dims, verbose=0):
         print(quoting.to_source(pri))
 
       # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
-      def adjoint_template(_adjoint):
-        def _adjoint(_stack, bz, *args):
-          # FIXME: Assumes that original func only has one scalar output (z -> bz)
-          _bzs = []
+      def adjoint_template(_adjoint, _dz, _bz, _projected_jacobian):
+        # FIXME: Assumes that original func only has one or multiple scalar outputs
+        def _adjoint(_stack, _bz, *args):
           result = tangent.pop(_stack, 'result_id')
           n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
+          # FIXME: This has to be replaced by corresponding init_grad statements?
+          _projected_jacobian = [0] * n_jac_pushes
           for i in range(n_jac_pushes):
-            dz = tangent.pop(_stack, 'op_id')
+            _dz = tangent.pop(_stack, 'op_id')
+
             # FIXME: For higher dimensions: dz * bz or bz * dz?
-            _bzs.append(dz * bz)
-          return tuple(reversed(_bzs)) + (result,)
+            if isinstance(_dz, (tuple, list)):
+              for j in range(len(_dz)):
+                _projected_jacobian[i] += _dz[j] * _bz[j]
+            else:
+              _projected_jacobian[i] += _dz * _bz
+          return tuple(reversed(_projected_jacobian)) + (result,)
 
       adj = template.replace(
         adjoint_template,
         replace_grad=template.Replace.NONE,
         namer=None,
-        _adjoint=adjoint_name
+        _adjoint=adjoint_name,
+        _dz='_d{}'.format(func_name),
+        _bz='_b{}'.format(func_name),
+        _projected_jacobian='_d{}s_times_b{}s'.format(func_name, func_name)
       )[0]
 
       if verbose >= 2:
