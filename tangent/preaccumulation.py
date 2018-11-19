@@ -279,60 +279,6 @@ def create_dag(nodes, inputs, outputs, wrt):
 
   return dag
 
-partials = {}
-partial_ = grads.create_register(partials)
-
-
-@partial_(gast.Name)
-def pname(z, x):
-  d[z,x] = d[x]
-
-
-@partial_(gast.Num)
-def pnum(z, x):
-  d[z,x] = tangent.init_grad(x)
-
-
-@partial_(gast.Add)
-def tadd(z, x, y):
-  d[z,x] = d[x]
-  d[z,y] = d[y]
-
-
-@partial_(gast.Mult)
-def tmult(z, x, y):
-  d[z,x] = d[x] * y
-  d[z,y] = x * d[y]
-
-
-@partial_(gast.Sub)
-def tsub(z, x, y):
-  d[z,x] = d[x] 
-  d[z,y] = - d[y]
-
-
-@partial_(gast.Div)
-def tdiv(z, x, y):
-  d[z,x] = (d[x] * y) / (y * y)
-  d[z,y] = (- x * d[y]) / (y * y)
-
-
-# FIXME: Support for active exponent?
-@partial_(gast.Pow)
-def tpow(z, x, y):
-  d[z,x] = y * (x ** (y - 1.0)) * d[x]
-
-
-@partial_(gast.USub)
-def tusub(z, x):
-  d[z,x] = -d[x]
-
-def dag_to_ldag(dag_nodes):
-  for node in dag_next:
-    while not node.prev.empty():
-      pred = node.prev.pop()
-  pass
-
 
 def dag_to_dot(dag):
   """Create a dot file representation of the given DAG."""
