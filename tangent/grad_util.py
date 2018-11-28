@@ -106,7 +106,8 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
       print('PREACC MODE: "{}"'.format(preacc_params['mode']))
 
     if not preacc_params['mode'] == mode:
-      node, required = preaccumulation.from_decorator(body, wrt, check_dims, verbose)
+      node, required = preaccumulation.from_decorator(body, wrt, motion,
+                                                      check_dims, verbose)
       return node, required
     else:
       print('WARNING: Preacc mode is identical to global AD mode. '

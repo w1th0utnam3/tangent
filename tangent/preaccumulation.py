@@ -23,6 +23,7 @@ from tangent import dag as dag_
 from tangent import forward_ad
 from tangent import naming
 from tangent import quoting
+from tangent import reverse_ad
 from tangent import template
 
 PREACCUMULATION_ANNO = 'preaccumulation'
@@ -33,7 +34,9 @@ def preaccumulate(mode='full'):
   """Decorator to mark an entire function for preaccumulation."""
   def preacc_wrapper(func):
     # TODO: Use attr to store any parameters
-    setattr(func, PREACCUMULATION_FIELD, {'enabled': True, 'mode': mode})
+    setattr(func, PREACCUMULATION_FIELD, {'enabled': True,
+                                          'mode': mode,
+                                          'func': func})
     return func
 
   return preacc_wrapper
@@ -67,10 +70,8 @@ def enabled(node):
   return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
 
 
-def forward_preacc(node, wrt, check_dims, verbose=0):
+def forward_preacc(node, wrt, motion, check_dims, verbose=0):
   """Perform forward preaccumulation in a reverse mode context"""
-
-  # Forward mode preaccumulation implies that we have an outer reverse mode
 
   if verbose >= 0:
     print('Performing forward preaccumulation')
@@ -78,14 +79,14 @@ def forward_preacc(node, wrt, check_dims, verbose=0):
   func = anno.getanno(node, 'func')
   # Create working copy to avoid changing the original nodes
   forward_node = deepcopy(node)
-  # Generate tangent of the function
+  # Generate tangent code of the function
   forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
                                                  check_dims)
-  tngt = forward_node.body[0]
+  tngt_def = forward_node.body[0]
 
   # Get names of all involved functions
   func_name = func.__name__
-  tangent_name = tngt.name
+  tangent_name = tngt_def.name
   primal_name = naming.primal_name(func, wrt)
   adjoint_name = naming.adjoint_name(func, wrt)
 
@@ -94,7 +95,7 @@ def forward_preacc(node, wrt, check_dims, verbose=0):
   # Active primal arguments
   active_args = [func_args[i] for i in wrt]
   # All arguments of the tangent
-  tangent_args = tngt.args.args
+  tangent_args = tngt_def.args.args
 
   assert len(func_args) + len(active_args) == len(tangent_args)
 
@@ -173,24 +174,77 @@ def forward_preacc(node, wrt, check_dims, verbose=0):
 
   # TODO: What to do with op_id? Have a look at how reverse mode treats for-loops
   # TODO: Properly support split and joint motion?
-  forward_node = gast.Module(body=[tngt, pri, adj])
+  forward_node = gast.Module(body=[tngt_def, pri, adj])
   return forward_node, []
 
 
-def from_decorator(node, wrt, check_dims, verbose=0):
+def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
+  """Perform reverse preaccumulation in a forward mode context"""
+
+  if verbose >= 0:
+    print('Performing reverse preaccumulation')
+
+  func = anno.getanno(node, 'func')
+  # Create working copy to avoid changing the original nodes
+  adjoint_node = deepcopy(node)
+  # Generate adjoint code of the function
+  adjoint_node, required, stack = reverse_ad.reverse_ad(adjoint_node, wrt,
+                                                        True, check_dims)
+  # Join the primal and adjoint sections
+  adjoint_node = reverse_ad.joint(adjoint_node)
+  pri_adj_def = adjoint_node.body[0]
+
+  # Get names of all involved functions
+  func_name = func.__name__
+  tangent_name = naming.tangent_name(func, wrt)
+  primal_name = pri_adj_def.name
+  adjoint_name = naming.adjoint_name(func, wrt)
+
+  # All arguments of original primal
+  func_args = node.args.args
+  # Active primal arguments
+  active_args = [func_args[i] for i in wrt]
+
+  def tangent_template(_args, _active_args, _adjoint_call):
+    def _tangent_call(_args, _active_args):
+      # FIXME: Calculate result only once?
+      # FIXME: How to get number of output adjoints? adj_args - stack - args?
+      for i in range(num_out_adjoints):
+        # TODO: Init next out adjoint
+        _stack = tangent.Stack()
+        _adjoint_result = _adjoint_call(_stack, _out_adjoints, _args)
+        _result = _adjoint_result[-1]
+        _in_adjoints = _adjoint_result[:-1]
+        # TODO: Transpose and multiply with tangent direction?
+
+      # TODO: return _grad, _result
+      return 1,0
+
+  tngt = template.replace(
+    tangent_template,
+    replace_grad=template.Replace.NONE,
+    namer=None,
+    _args=func_args,
+    _active_args=active_args,
+    _adjoint_call=primal_name
+  )
+
+  raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
+                            'yet implemented!')
+
+
+def from_decorator(node, wrt, motion, check_dims, verbose=0):
   """Perform preaccumulation on a node that was marked for preaccumulation using the decorator."""
 
-  # TODO: Get mode, wrt, verbose, etc. params from global differentiation
   # TODO: What about nested function calls? Nested preaccumulate function calls?
   preacc_params = anno.getanno(node, PREACCUMULATION_ANNO)
 
   if preacc_params['enabled']:
     preacc_mode = preacc_params['mode']
     if preacc_mode == 'forward':
-      return forward_preacc(node, wrt, check_dims, verbose)
+      return forward_preacc(node, wrt, motion, check_dims, verbose)
     elif preacc_mode == 'reverse':
-      raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
-                                'yet implemented!')
+      return reverse_preacc(node, wrt, motion, check_dims, verbose)
     elif preacc_mode == 'cross_country':
       return function_to_dag(node)
 
