@@ -21,12 +21,9 @@ import tangent
 from tangent import annotations as anno
 from tangent import dag as dag_
 from tangent import forward_ad
-from tangent import grads
 from tangent import naming
 from tangent import quoting
-from tangent import reverse_ad
 from tangent import template
-from tangent import utils
 
 PREACCUMULATION_ANNO = 'preaccumulation'
 PREACCUMULATION_FIELD = '_preaccumulation'
@@ -49,7 +46,8 @@ def preprocess(func):
   preacc_params = getattr(resolved_func, PREACCUMULATION_FIELD, {'enabled': False})
 
   if preacc_params is not None:
-    preaccumulate_decorators = [(i, dec) for i, dec in enumerate(func.decorator_list) if isinstance(dec, gast.Call) and dec.func.attr == preaccumulate.__name__]
+    preaccumulate_decorators = [(i, dec) for i, dec in enumerate(func.decorator_list)
+                                if isinstance(dec, gast.Call) and dec.func.attr == preaccumulate.__name__]
 
     if len(preaccumulate_decorators) > 1:
       raise ValueError('Multiple preaccumulate decorators on one function are not allowed.')
@@ -69,126 +67,132 @@ def enabled(node):
   return anno.getanno(node, PREACCUMULATION_ANNO, {'enabled': False})['enabled']
 
 
+def forward_preacc(node, wrt, check_dims, verbose=0):
+  """Perform forward preaccumulation in a reverse mode context"""
+
+  # Forward mode preaccumulation implies that we have an outer reverse mode
+
+  if verbose >= 0:
+    print('Performing forward preaccumulation')
+
+  func = anno.getanno(node, 'func')
+  # Create working copy to avoid changing the original nodes
+  forward_node = deepcopy(node)
+  # Generate tangent of the function
+  forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
+                                                 check_dims)
+  tngt = forward_node.body[0]
+
+  # Get names of all involved functions
+  func_name = func.__name__
+  tangent_name = tngt.name
+  primal_name = naming.primal_name(func, wrt)
+  adjoint_name = naming.adjoint_name(func, wrt)
+
+  # All arguments of original primal
+  func_args = node.args.args
+  # Active primal arguments
+  active_args = [func_args[i] for i in wrt]
+  # All arguments of the tangent
+  tangent_args = tngt.args.args
+
+  assert len(func_args) + len(active_args) == len(tangent_args)
+
+  # Tangents of all active variables (dx, ...)
+  tangents = tangent_args[len(func_args):]
+
+  assert [arg.id for arg in func_args + tangents] == [arg.id for arg in tangent_args]
+
+  # Template for driver used to accumulate the Jacobian in primal section
+  def primal_template(_args, _active_args, _tangents, _primal_call, _tangent_call, _dz, _z):
+    def _primal_call(_stack, _args):
+      # FIXME: Generate unique names for the local variables?
+      gradients = tangent.init_grad([_active_args])
+
+      n_jac_pushes = 0
+      # FIXME: Support for non-scalar arguments
+      for i in range(len(gradients)):
+        gradients[i] = 1
+        _dz, _z = _tangent_call(_args, *gradients)
+        tangent.push(_stack, _dz, 'op_id')
+        n_jac_pushes += 1
+        gradients[i] = 0
+      tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
+      tangent.push(_stack, _z, 'result_id')
+      return _z
+
+  pri = template.replace(
+    primal_template,
+    replace_grad=template.Replace.NONE,
+    namer=None,
+    _args=func_args,
+    _active_args=active_args,
+    _tangents=tangents,
+    _primal_call=primal_name,
+    _tangent_call=tangent_name,
+    _dz='_d{}'.format(func_name),
+    _z='_{}'.format(func_name)
+  )[0]
+
+  if verbose >= 2:
+    print("Jacobian accumulation primal driver:")
+    print(quoting.to_source(pri))
+
+  # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
+  def adjoint_template(_adjoint, _dz, _bz, _projected_jacobian):
+    # FIXME: Assumes that original func only has one or multiple scalar outputs
+    def _adjoint(_stack, _bz, *args):
+      result = tangent.pop(_stack, 'result_id')
+      n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
+      # FIXME: This has to be replaced by corresponding init_grad statements?
+      _projected_jacobian = [0] * n_jac_pushes
+      for i in range(n_jac_pushes):
+        _dz = tangent.pop(_stack, 'op_id')
+
+        # FIXME: For higher dimensions: dz * bz or bz * dz?
+        if isinstance(_dz, (tuple, list)):
+          for j in range(len(_dz)):
+            _projected_jacobian[i] += _dz[j] * _bz[j]
+        else:
+          _projected_jacobian[i] += _dz * _bz
+      return tuple(reversed(_projected_jacobian)) + (result,)
+
+  adj = template.replace(
+    adjoint_template,
+    replace_grad=template.Replace.NONE,
+    namer=None,
+    _adjoint=adjoint_name,
+    _dz='_d{}'.format(func_name),
+    _bz='_b{}'.format(func_name),
+    _projected_jacobian='_d{}s_times_b{}s'.format(func_name, func_name)
+  )[0]
+
+  if verbose >= 2:
+    print("Jacobian evaluation adjoint driver:")
+    print(quoting.to_source(adj))
+
+  # TODO: What to do with op_id? Have a look at how reverse mode treats for-loops
+  # TODO: Properly support split and joint motion?
+  forward_node = gast.Module(body=[tngt, pri, adj])
+  return forward_node, []
+
+
 def from_decorator(node, wrt, check_dims, verbose=0):
   """Perform preaccumulation on a node that was marked for preaccumulation using the decorator."""
 
   # TODO: Get mode, wrt, verbose, etc. params from global differentiation
   # TODO: What about nested function calls? Nested preaccumulate function calls?
   preacc_params = anno.getanno(node, PREACCUMULATION_ANNO)
-  
+
   if preacc_params['enabled']:
     preacc_mode = preacc_params['mode']
     if preacc_mode == 'forward':
-      # Forward mode preaccumulation implies that we have an outer reverse mode
-
-      if verbose >= 0:
-        print('Performing forward preaccumulation')
-
-      func = anno.getanno(node, 'func')
-      # Create working copy to avoid changing the original nodes
-      forward_node = deepcopy(node)
-      # Generate tangent of the function
-      forward_node, required = forward_ad.forward_ad(forward_node, wrt, True,
-                                                     check_dims)
-      tngt = forward_node.body[0]
-
-      # Get names of all involved functions
-      func_name = func.__name__
-      tangent_name = tngt.name
-      primal_name = naming.primal_name(func, wrt)
-      adjoint_name = naming.adjoint_name(func, wrt)
-
-      # All arguments of original primal
-      func_args = node.args.args
-      # Active primal arguments
-      active_args = [func_args[i] for i in wrt]
-      # All arguments of the tangent
-      tangent_args = tngt.args.args
-
-      assert len(func_args) + len(active_args) == len(tangent_args)
-
-      # Tangents of all active variables (dx, ...)
-      tangents = tangent_args[len(func_args):]
-
-      assert [arg.id for arg in func_args + tangents] == [arg.id for arg in tangent_args]
-
-      # Template for driver used to accumulate the Jacobian in primal section
-      def primal_template(_args, _active_args, _tangents, _primal_call, _tangent_call, _dz, _z):
-        def _primal_call(_stack, _args):
-          # FIXME: Generate unique names for the local variables?
-          gradients = tangent.init_grad([_active_args])
-
-          n_jac_pushes = 0
-          # FIXME: Support for non-scalar arguments
-          for i in range(len(gradients)):
-            gradients[i] = 1
-            _dz, _z = _tangent_call(_args, *gradients)
-            tangent.push(_stack, _dz, 'op_id')
-            n_jac_pushes += 1
-            gradients[i] = 0
-          tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
-          tangent.push(_stack, _z, 'result_id')
-          return _z
-
-      pri = template.replace(
-        primal_template,
-        replace_grad=template.Replace.NONE,
-        namer=None,
-        _args=func_args,
-        _active_args=active_args,
-        _tangents=tangents,
-        _primal_call=primal_name,
-        _tangent_call=tangent_name,
-        _dz='_d{}'.format(func_name),
-        _z='_{}'.format(func_name)
-      )[0]
-
-      if verbose >= 2:
-        print("Jacobian accumulation primal driver:")
-        print(quoting.to_source(pri))
-
-      # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
-      def adjoint_template(_adjoint, _dz, _bz, _projected_jacobian):
-        # FIXME: Assumes that original func only has one or multiple scalar outputs
-        def _adjoint(_stack, _bz, *args):
-          result = tangent.pop(_stack, 'result_id')
-          n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
-          # FIXME: This has to be replaced by corresponding init_grad statements?
-          _projected_jacobian = [0] * n_jac_pushes
-          for i in range(n_jac_pushes):
-            _dz = tangent.pop(_stack, 'op_id')
-
-            # FIXME: For higher dimensions: dz * bz or bz * dz?
-            if isinstance(_dz, (tuple, list)):
-              for j in range(len(_dz)):
-                _projected_jacobian[i] += _dz[j] * _bz[j]
-            else:
-              _projected_jacobian[i] += _dz * _bz
-          return tuple(reversed(_projected_jacobian)) + (result,)
-
-      adj = template.replace(
-        adjoint_template,
-        replace_grad=template.Replace.NONE,
-        namer=None,
-        _adjoint=adjoint_name,
-        _dz='_d{}'.format(func_name),
-        _bz='_b{}'.format(func_name),
-        _projected_jacobian='_d{}s_times_b{}s'.format(func_name, func_name)
-      )[0]
-
-      if verbose >= 2:
-        print("Jacobian evaluation adjoint driver:")
-        print(quoting.to_source(adj))
-
-      # TODO: What to do with op_id? Have a look at how reverse mode treats for-loops
-      # TODO: Properly support split and joint motion?
-      forward_node = gast.Module(body=[tngt, pri, adj])
-      return forward_node, []
+      return forward_preacc(node, wrt, check_dims, verbose)
     elif preacc_mode == 'reverse':
       raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
                                 'yet implemented!')
     elif preacc_mode == 'cross_country':
-      function_to_dag(node)
+      return function_to_dag(node)
 
 
 def function_to_dag(func):
@@ -239,7 +243,7 @@ def create_dag(nodes, inputs, outputs, wrt):
 
       if target.id in last_assign:
         raise RuntimeError('Input has to be in ANF. Cannot assign repeatedly '
-                            'to the same variable!')
+                           'to the same variable!')
 
       last_assign[target.id] = dag_node_id
     elif isinstance(node, gast.Return):
@@ -266,7 +270,7 @@ def create_dag(nodes, inputs, outputs, wrt):
       node_inputs += [node_value]
     else:
       raise TypeError('Encountered unsupported node type "{}" of node "{}" '
-                      'during DAG creation.'.format(type(node_value).__name__, 
+                      'during DAG creation.'.format(type(node_value).__name__,
                                                     node_value))
 
     # Link inputs to the current node
