@@ -202,35 +202,66 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
 
   # All arguments of original primal
   func_args = node.args.args
+  # All arguments of the adjoint function
+  pri_adj_args = pri_adj_def.args.args
   # Active primal arguments
   active_args = [func_args[i] for i in wrt]
+  in_tangents = deepcopy(active_args)
+  for it in in_tangents:
+    it.id = 'd{}'.format(it.id)
 
-  def tangent_template(_args, _active_args, _adjoint_call):
-    def _tangent_call(_args, _active_args):
-      # FIXME: Calculate result only once?
-      # FIXME: How to get number of output adjoints? adj_args - stack - args?
-      for i in range(num_out_adjoints):
-        # TODO: Init next out adjoint
+  # Adjoints of the dependent output variables of the original function
+  # Adjoint primal args are: (stack, "output adjoints", function arguments)
+  out_adjoints = pri_adj_args[1:len(pri_adj_args) - len(func_args)]
+  num_out_adjoints = len(out_adjoints)
+  # For every active argument there is an "input adjoint"
+  num_in_adjoints = len(wrt)
+
+  def tangent_template(_args, _in_tangents, _tangent_call, _adjoint_call, _out_adjoints):
+    def _tangent_call(_args, _in_tangents):
+      in_tangents = [_in_tangents]
+      # TODO: _out_adjoints are not defined here, we have to get this from the
+      # result of the primal?
+      out_adjoints = tangent.init_grad([_out_adjoints])
+      gradients = tangent.init_grad([_in_tangents])
+
+      # FIXME: Support for non-scalar adjoints
+      for i in range(len(out_adjoints)):
+        out_adjoints[i] = 1
+
         _stack = tangent.Stack()
-        _adjoint_result = _adjoint_call(_stack, _out_adjoints, _args)
+        # FIXME: Calculate result only once?
+        _adjoint_result = _adjoint_call(_stack, *out_adjoints, _args)
         _result = _adjoint_result[-1]
-        _in_adjoints = _adjoint_result[:-1]
-        # TODO: Transpose and multiply with tangent direction?
 
-      # TODO: return _grad, _result
-      return 1,0
+        in_adjoints = _adjoint_result[:-1]
+        # FIXME: For higher dimensions: dz * bz or bz * dz?
+        for j in range(len(in_tangents)):
+          gradients[j] += in_adjoints[j] * in_tangents[j]
 
-  tngt = template.replace(
+        out_adjoints[i] = 0
+
+      dt = tuple(gradients)
+      t = _result
+      return dt, t
+
+  tngt_driver_def = template.replace(
     tangent_template,
     replace_grad=template.Replace.NONE,
     namer=None,
     _args=func_args,
-    _active_args=active_args,
-    _adjoint_call=primal_name
-  )
+    _in_tangents=in_tangents,
+    _tangent_call=tangent_name,
+    _adjoint_call=primal_name,
+    _out_adjoints=out_adjoints
+  )[0]
 
-  raise NotImplementedError('TODO: Reverse mode preaccumulation is not '
-                            'yet implemented!')
+  if verbose >= 2:
+    print("Jacobian accumulation driver:")
+    print(quoting.to_source(tngt_driver_def))
+
+  adjoint_node = gast.Module(body=[pri_adj_def, tngt_driver_def])
+  return adjoint_node, []
 
 
 def from_decorator(node, wrt, motion, check_dims, verbose=0):
