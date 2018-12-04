@@ -101,11 +101,10 @@ def autodiff_ast(func, wrt, motion, mode, preserve_result, check_dims, verbose):
     print(quoting.to_source(node))
 
   if preaccumulation.enabled(body):
-    # TODO: Generate calling/driver code depending on mode
     if verbose >= 2:
       print('PREACC MODE: "{}"'.format(preacc_params['mode']))
 
-    if not preacc_params['mode'] == mode:
+    if preacc_params['mode'] != mode:
       node, required = preaccumulation.from_decorator(body, wrt, motion,
                                                       check_dims, verbose)
       return node, required

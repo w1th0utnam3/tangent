@@ -42,13 +42,22 @@ def preaccumulate(mode='full'):
   return preacc_wrapper
 
 
+def del_preaccumulate_fields(func):
+  if anno.hasanno(func, 'func'):
+    func = anno.getanno(func, 'func')
+  
+  delattr(func, PREACCUMULATION_FIELD)
+
+
 def preprocess(func):
   """Write preaccumulation parameters from decorator to annotation if available."""
 
   resolved_func = anno.getanno(func, 'func')
   preacc_params = getattr(resolved_func, PREACCUMULATION_FIELD, {'enabled': False})
 
-  if preacc_params is not None:
+  if preacc_params is None:
+    preacc_params = {'enabled': False}
+  else:
     preaccumulate_decorators = [(i, dec) for i, dec in enumerate(func.decorator_list)
                                 if isinstance(dec, gast.Call) and dec.func.attr == preaccumulate.__name__]
 
@@ -105,7 +114,8 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
   assert [arg.id for arg in func_args + tangents] == [arg.id for arg in tangent_args]
 
   # Template for driver used to accumulate the Jacobian in primal section
-  def primal_template(_args, _active_args, _tangents, _primal_call, _tangent_call, _dz, _z):
+  def primal_driver_template(_args, _active_args, _tangents,
+                             _primal_call, _tangent_call, _dz, _z):
     def _primal_call(_stack, _args):
       # FIXME: Generate unique names for the local variables?
       gradients = tangent.init_grad([_active_args])
@@ -113,17 +123,17 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
       n_jac_pushes = 0
       # FIXME: Support for non-scalar arguments
       for i in range(len(gradients)):
-        gradients[i] = 1
+        gradients[i] = 1.0
         _dz, _z = _tangent_call(_args, *gradients)
         tangent.push(_stack, _dz, 'op_id')
         n_jac_pushes += 1
-        gradients[i] = 0
+        gradients[i] = 0.0
       tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
       tangent.push(_stack, _z, 'result_id')
       return _z
 
   pri = template.replace(
-    primal_template,
+    primal_driver_template,
     replace_grad=template.Replace.NONE,
     namer=None,
     _args=func_args,
@@ -140,7 +150,7 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
     print(quoting.to_source(pri))
 
   # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
-  def adjoint_template(_adjoint, _dz, _bz, _projected_jacobian):
+  def adjoint_driver_template(_adjoint, _dz, _bz, _projected_jacobian):
     # FIXME: Assumes that original func only has one or multiple scalar outputs
     def _adjoint(_stack, _bz, *args):
       result = tangent.pop(_stack, 'result_id')
@@ -159,7 +169,7 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
       return tuple(reversed(_projected_jacobian)) + (result,)
 
   adj = template.replace(
-    adjoint_template,
+    adjoint_driver_template,
     replace_grad=template.Replace.NONE,
     namer=None,
     _adjoint=adjoint_name,
@@ -188,79 +198,75 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
   # Create working copy to avoid changing the original nodes
   adjoint_node = deepcopy(node)
   # Generate adjoint code of the function
-  adjoint_node, required, stack = reverse_ad.reverse_ad(adjoint_node, wrt,
-                                                        True, check_dims)
-  # Join the primal and adjoint sections
-  adjoint_node = reverse_ad.joint(adjoint_node)
-  pri_adj_def = adjoint_node.body[0]
+  adjoint_node, required, stack = reverse_ad.reverse_ad(adjoint_node, wrt=wrt,
+                                                        preserve_result=False,
+                                                        check_dims=check_dims)
+  adjoint_node = reverse_ad.split(adjoint_node, stack)
+  primal_def, adjoint_def = adjoint_node.body
 
-  # Get names of all involved functions
-  func_name = func.__name__
+  # Get names of all relevant functions
   tangent_name = naming.tangent_name(func, wrt)
-  primal_name = pri_adj_def.name
-  adjoint_name = naming.adjoint_name(func, wrt)
+  primal_name = primal_def.name
+  adjoint_name = adjoint_def.name
 
-  # All arguments of original primal
+  # All arguments of original function
   func_args = node.args.args
-  # All arguments of the adjoint function
-  pri_adj_args = pri_adj_def.args.args
-  # Active primal arguments
+  # Active function arguments
   active_args = [func_args[i] for i in wrt]
-  in_tangents = deepcopy(active_args)
-  for it in in_tangents:
+  # Tangents of active arguments
+  arg_tangents = deepcopy(active_args)
+  for it in arg_tangents:
     it.id = 'd{}'.format(it.id)
 
-  # Adjoints of the dependent output variables of the original function
-  # Adjoint primal args are: (stack, "output adjoints", function arguments)
-  out_adjoints = pri_adj_args[1:len(pri_adj_args) - len(func_args)]
-  num_out_adjoints = len(out_adjoints)
-  # For every active argument there is an "input adjoint"
-  num_in_adjoints = len(wrt)
+  def tangent_driver_template(_args, _arg_tangents,
+                              _tangent_call, _primal_call, _adjoint_call):
+    def _tangent_call(_args, _arg_tangents):
+      _stack = tangent.Stack()
+      _return = _primal_call(_stack, _args)
 
-  def tangent_template(_args, _in_tangents, _tangent_call, _adjoint_call, _out_adjoints):
-    def _tangent_call(_args, _in_tangents):
-      in_tangents = [_in_tangents]
-      # TODO: _out_adjoints are not defined here, we have to get this from the
-      # result of the primal?
-      out_adjoints = tangent.init_grad([_out_adjoints])
-      gradients = tangent.init_grad([_in_tangents])
+      _dargs = [_arg_tangents]
+      _breturn = tangent.init_grad(_return)
+      _dreturn = tangent.init_grad(_dargs)
 
       # FIXME: Support for non-scalar adjoints
-      for i in range(len(out_adjoints)):
-        out_adjoints[i] = 1
+      for i in range(len(_breturn)):
+        _breturn[i] = 1.0
 
-        _stack = tangent.Stack()
-        # FIXME: Calculate result only once?
-        _adjoint_result = _adjoint_call(_stack, *out_adjoints, _args)
-        _result = _adjoint_result[-1]
+        # FIXME: Make copies of the stack instead of reevaluating
+        if _stack is None:
+            _stack = tangent.Stack()
+            _primal_call(_stack, _args)
 
-        in_adjoints = _adjoint_result[:-1]
+        _bargs = _adjoint_call(_stack, _breturn, _args)
+
         # FIXME: For higher dimensions: dz * bz or bz * dz?
-        for j in range(len(in_tangents)):
-          gradients[j] += in_adjoints[j] * in_tangents[j]
+        for j in range(len(_dargs)):
+          _dreturn[i] += _bargs[j] * _dargs[j]
 
-        out_adjoints[i] = 0
+        _stack = None
 
-      dt = tuple(gradients)
-      t = _result
+        _breturn[i] = 0.0
+
+      dt = tuple(_dreturn)
+      t = _return
       return dt, t
 
-  tngt_driver_def = template.replace(
-    tangent_template,
+  tangent_driver_def = template.replace(
+    tangent_driver_template,
     replace_grad=template.Replace.NONE,
     namer=None,
     _args=func_args,
-    _in_tangents=in_tangents,
+    _arg_tangents=arg_tangents,
     _tangent_call=tangent_name,
-    _adjoint_call=primal_name,
-    _out_adjoints=out_adjoints
+    _primal_call=primal_name,
+    _adjoint_call=adjoint_name
   )[0]
 
   if verbose >= 2:
     print("Jacobian accumulation driver:")
-    print(quoting.to_source(tngt_driver_def))
+    print(quoting.to_source(tangent_driver_def))
 
-  adjoint_node = gast.Module(body=[pri_adj_def, tngt_driver_def])
+  adjoint_node = gast.Module(body=[primal_def, adjoint_def, tangent_driver_def])
   return adjoint_node, []
 
 
