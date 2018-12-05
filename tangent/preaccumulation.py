@@ -156,7 +156,7 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
       result = tangent.pop(_stack, 'result_id')
       n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
       # FIXME: This has to be replaced by corresponding init_grad statements?
-      _projected_jacobian = [0] * n_jac_pushes
+      _projected_jacobian = [0.0] * n_jac_pushes
       for i in range(n_jac_pushes):
         _dz = tangent.pop(_stack, 'op_id')
 
