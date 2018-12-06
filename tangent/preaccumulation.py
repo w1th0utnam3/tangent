@@ -301,24 +301,22 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
       _breturn = tangent.init_grad(_return)
       _dreturn = tangent.init_grad(_dargs)
 
-      # FIXME: Support for non-scalar adjoints
-      for i in range(len(_breturn)):
-        _breturn[i] = 1.0
-
+      # FIXME: Check with non-scalar adjoints
+      # FIXME: Are all return values always active?
+      # FIXME: Enumerate not compatible with nested lists/numpy arrays
+      for i, _bseed in enumerate(tangent.unit_seed_directions(_return)):
         # FIXME: Make copies of the stack instead of reevaluating
         if _stack is None:
             _stack = tangent.Stack()
             _primal_call(_stack, _args)
 
-        _bargs = _adjoint_call(_stack, _breturn, _args)
+        _bargs = _adjoint_call(_stack, _bseed, _args)
 
         # FIXME: For higher dimensions: dz * bz or bz * dz?
         for j in range(len(_dargs)):
           _dreturn[i] += _bargs[j] * _dargs[j]
 
         _stack = None
-
-        _breturn[i] = 0.0
 
       dt = tuple(_dreturn)
       t = _return
