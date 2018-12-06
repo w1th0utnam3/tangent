@@ -541,6 +541,116 @@ def add_grad(left, right):
   return grad_adders[(left_type, right_type)](left, right)
 
 
+def mult_grad_numpy_int_argument(left, right):
+  print('WARNING: Automatically upcasting a temporary integer variable to '
+        'float. This may happen if you differentiate with respect to an '
+        'integer argument and may lead to unexpected results.')
+  right = unbroadcast(numpy.array(right), left)
+  return left @ right
+
+
+def mult_grad_float_int_argument(left, right):
+  print('WARNING: Automatically upcasting a temporary integer variable to '
+        'float. This may happen if you differentiate with respect to an '
+        'integer argument and may lead to unexpected results.')
+  return left * right
+
+
+def mult_grad_numpy(left, right):
+  right = unbroadcast(numpy.array(right), left)
+  return left @ right
+
+
+def mult_grad_tuple(left, right):
+  assert len(left) == len(right)
+  return tuple(mult_grad(l, r) for l, r in zip(left, right))
+
+
+def mult_grad_list(left, right):
+  assert len(left) == len(right)
+  # Lists are treated as vectors/like numpy arrays
+  result = None if len(left) == 0 else ZeroGradient(left[0])
+  for i in range(len(left)):
+    result = add_grad(result, mult_grad(left[i], right[i]))
+  return result
+
+
+def mult_grad_dict(left, right):
+  assert all(k in left for k in right)
+  return {k: mult_grad(left[k], right[k]) for k in left}
+
+
+grad_multipliers = {
+    (tuple, tuple): mult_grad_tuple,
+    (list, list): mult_grad_list,
+    (dict, dict): mult_grad_dict,
+    (numpy.ndarray, numpy.ndarray): mult_grad_numpy,
+    (numpy.ndarray, list): mult_grad_numpy,
+    (list, numpy.ndarray): mult_grad_numpy,
+    (bool, bool): lambda left, right: left or right,
+}
+
+
+def register_mult_grad(left_type, right_type, mult_grad_function):
+  """Register a new gradient adder supporting the given types."""
+  key = (left_type, right_type)
+  if key in grad_multipliers:
+    raise ValueError('Types %s already mapped to %s' % (key, grad_multipliers[key]))
+  grad_multipliers[key] = mult_grad_function
+
+
+def register_all_mult_grad(mult_grad_function, arg_types,
+                           exclude=(), ignore_existing=False):
+  """Register a gradient multipliers for all combinations of given types."""
+  for t1 in arg_types:
+    for t2 in arg_types:
+      if (t1, t2) in exclude:
+        continue
+      if ignore_existing and (t1, t2) in grad_multipliers:
+        continue
+      register_mult_grad(t1, t2, mult_grad_function)
+
+
+register_all_mult_grad(
+    lambda left, right: left * right,
+    (float, numpy.float32, numpy.float64, numpy.ndarray),
+    exclude=((numpy.ndarray, numpy.ndarray),))
+
+
+register_all_mult_grad(
+    lambda left, right: left * right,
+    (int, numpy.int32, numpy.int64),
+    ignore_existing=True)
+
+
+register_all_mult_grad(
+    mult_grad_float_int_argument,
+    (float, int,
+     numpy.int32, numpy.int64, numpy.float32, numpy.float64),
+    ignore_existing=True)
+
+
+register_all_mult_grad(
+    mult_grad_numpy_int_argument,
+    (float, int,
+     numpy.int32, numpy.int64, numpy.float32, numpy.float64,
+     numpy.ndarray),
+    exclude=((numpy.ndarray, numpy.ndarray),),
+    ignore_existing=True)
+
+
+def mult_grad(left, right):
+  """Recursively multiply the gradient of two objects."""
+  assert left is not None and right is not None
+  left_type = type(left)
+  right_type = type(right)
+  if left_type is ZeroGradient:
+    return right
+  if right_type is ZeroGradient:
+    return left
+  return grad_multipliers[(left_type, right_type)](left, right)
+
+
 def array_shapes_match(a, b):
   return numpy.shape(a) == numpy.shape(b)
 

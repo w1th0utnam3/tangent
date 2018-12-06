@@ -47,7 +47,7 @@ def preaccumulate(mode='full'):
 def del_preaccumulate_fields(func):
   if anno.hasanno(func, 'func'):
     func = anno.getanno(func, 'func')
-  
+
   delattr(func, PREACCUMULATION_FIELD)
 
 
@@ -226,13 +226,12 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
       _stack = tangent.Stack()
       _return = _primal_call(_stack, _args)
 
-      _dargs = [_arg_tangents]
-      _breturn = tangent.init_grad(_return)
-      _dreturn = tangent.init_grad(_dargs)
+      _dargs = (_arg_tangents,)
+      _dreturn = tangent.init_grad(_return)
+      _dreturn = _dreturn if isinstance(_dreturn, list) else [_dreturn]
 
-      # FIXME: Check with non-scalar adjoints
       # FIXME: Are all return values always active?
-      # FIXME: Enumerate not compatible with nested lists/numpy arrays
+      # FIXME: Enumerate not compatible with nested lists/numpy arrays in lists
       for i, _bseed in enumerate(tangent.unit_seed_directions(_return)):
         # FIXME: Make copies of the stack instead of reevaluating
         if _stack is None:
@@ -243,7 +242,7 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
 
         # FIXME: For higher dimensions: dz * bz or bz * dz?
         for j in range(len(_dargs)):
-          _dreturn[i] += _bargs[j] * _dargs[j]
+          _dreturn[i] = tangent.add_grad(_dreturn[i], tangent.mult_grad(_bargs[j], _dargs[j]))
 
         _stack = None
 
