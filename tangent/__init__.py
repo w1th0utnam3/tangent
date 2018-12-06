@@ -38,10 +38,10 @@ from tangent.utils import push_stack
 from tangent.utils import shapes_match
 from tangent.utils import Stack
 from tangent.utils import unbroadcast
+from tangent.utils import unit_seed_directions
 from tangent.utils import unreduce
 from tangent.utils import unreduce_like
 from tangent.preaccumulation import preaccumulate
-from tangent.preaccumulation import unit_seed_directions
 
 # Imported last to avoid circular imports
 from tangent.grad_util import grad, autodiff, vjp, jvp

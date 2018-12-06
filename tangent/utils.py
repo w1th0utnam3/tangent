@@ -636,6 +636,78 @@ register_all_shape_checker(
     ignore_existing=True)
 
 
+def init_unit_int(_):
+  """Initialize gradient for an integral type. This prints a warning."""
+  print(
+      'WARNING: Creating intermediate variable of an integer type. This may '
+      'lead to unexpected results. If unsure, cast arguments to floating '
+      'point.')
+  return 1
+
+
+def init_unit_bool(_):
+  """Initialize gradient for an bool type. This prints a warning."""
+  print(
+      'WARNING: Creating intermediate variable of a boolean type. This may '
+      'indicate a bug.')
+  return True
+
+
+scalar_unit_seed = {
+    numpy.ndarray: None,
+    numpy.float32: lambda obj: 1.0,
+    numpy.float64: lambda obj: 1.0,
+    numpy.int32: init_unit_int,
+    numpy.int64: init_unit_int,
+    list: lambda obj: None,
+    tuple: lambda obj: None,
+    dict: lambda obj: None,
+    float: lambda obj: 1.0,
+    int: init_unit_int,
+    bool: init_unit_bool
+}
+
+
+def __unit_seed_gen(obj):
+  scalar_seed = scalar_unit_seed[type(obj)](obj)
+
+  if scalar_seed is not None:
+    yield scalar_seed, False
+    yield obj, True
+
+  else:
+    if isinstance(obj, numpy.ndarray):
+      for i in obj.size:
+        coords = numpy.unravel_index(i, obj.shape)
+        obj[coords] = 1.0
+        yield obj, False
+        obj[coords] = 0.0
+      yield obj, True
+
+    elif isinstance(obj, list):
+      for i in range(len(obj)):
+        for seed, reset in __unit_seed_gen(obj[i]):
+          obj[i] = seed
+          yield obj, reset
+
+    elif isinstance(obj, dict):
+      for k in obj.keys():
+        for seed, reset in __unit_seed_gen(obj[k]):
+          obj[k] = seed
+          yield obj, reset
+
+    else:
+      raise TypeError()
+
+
+def unit_seed_directions(obj):
+  # TODO: Add register functions for unit seed gens...
+  obj_grad = init_grad(obj)
+  for direction, is_reset in __unit_seed_gen(obj_grad):
+    if not is_reset:
+      yield direction
+
+
 def push(stack, x, op_id):
   """Push a value onto the stack (i.e. record it on the tape).
 
