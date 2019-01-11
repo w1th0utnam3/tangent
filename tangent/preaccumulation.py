@@ -119,17 +119,15 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
   def primal_driver_template(_args, _active_args, _tangents,
                              _primal_call, _tangent_call, _dz, _z):
     def _primal_call(_stack, _args):
-      # FIXME: Generate unique names for the local variables?
-      gradients = tangent.init_grad([_active_args])
+      # FIXME: Generate/ensure unique names for the local variables?
+      _dargs = tangent.init_grad([_active_args])
 
       n_jac_pushes = 0
-      # FIXME: Support for non-scalar arguments
-      for i in range(len(gradients)):
-        gradients[i] = 1.0
-        _dz, _z = _tangent_call(_args, *gradients)
+      for _dseed in tangent.unit_seed_directions(_dargs):
+        _dz, _z = _tangent_call(_args, *_dseed)
+        raise RuntimeError('')
         tangent.push(_stack, _dz, 'op_id')
         n_jac_pushes += 1
-        gradients[i] = 0.0
       tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
       tangent.push(_stack, _z, 'result_id')
       return _z
@@ -163,6 +161,9 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
         _dz = tangent.pop(_stack, 'op_id')
 
         # FIXME: For higher dimensions: dz * bz or bz * dz?
+        # FIXME: If input variable was list, projected jacobian also has to be list
+        #        -> counter i should go over variables, whereas n_jac_pushes counts all seed directions
+        #        -> seperator that distinguishes input variables and dimensions is needed
         if isinstance(_dz, (tuple, list)):
           for j in range(len(_dz)):
             _projected_jacobian[i] += _dz[j] * _bz[j]
@@ -233,7 +234,7 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
       # FIXME: Are all return values always active?
       # FIXME: Enumerate not compatible with nested lists/numpy arrays in lists
       for i, _bseed in enumerate(tangent.unit_seed_directions(_return)):
-        # FIXME: Make copies of the stack instead of reevaluating
+        # FIXME: Make copies of the stack instead of re-evaluating the primal
         if _stack is None:
             _stack = tangent.Stack()
             _primal_call(_stack, _args)
