@@ -122,13 +122,21 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
       # FIXME: Generate/ensure unique names for the local variables?
       _dargs = tangent.init_grad([_active_args])
 
-      n_jac_pushes = 0
+      n_outer_pushes = 0
+      n_inner_pushes = 0
+
       for _dseed in tangent.unit_seed_directions(_dargs):
+        if _dseed is None:
+          tangent.push(_stack, n_inner_pushes, 'jac_inner_pushes_id')
+          n_inner_pushes = 0
+          n_outer_pushes += 1
+          continue
+
         _dz, _z = _tangent_call(_args, *_dseed)
-        raise RuntimeError('')
         tangent.push(_stack, _dz, 'op_id')
-        n_jac_pushes += 1
-      tangent.push(_stack, n_jac_pushes, 'jac_pushes_id')
+        n_inner_pushes += 1
+
+      tangent.push(_stack, n_outer_pushes, 'jac_outer_pushes_id')
       tangent.push(_stack, _z, 'result_id')
       return _z
 
@@ -154,22 +162,44 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
     # FIXME: Assumes that original func only has one or multiple scalar outputs
     def _adjoint(_stack, _bz, *args):
       result = tangent.pop(_stack, 'result_id')
-      n_jac_pushes = tangent.pop(_stack, 'jac_pushes_id')
-      # FIXME: This has to be replaced by corresponding init_grad statements?
-      _projected_jacobian = [0.0] * n_jac_pushes
-      for i in range(n_jac_pushes):
-        _dz = tangent.pop(_stack, 'op_id')
+      n_outer_pushes = tangent.pop(_stack, 'jac_outer_pushes_id')
 
-        # FIXME: For higher dimensions: dz * bz or bz * dz?
-        # FIXME: If input variable was list, projected jacobian also has to be list
-        #        -> counter i should go over variables, whereas n_jac_pushes counts all seed directions
-        #        -> seperator that distinguishes input variables and dimensions is needed
-        if isinstance(_dz, (tuple, list)):
-          for j in range(len(_dz)):
-            _projected_jacobian[i] += _dz[j] * _bz[j]
-        else:
-          _projected_jacobian[i] += _dz * _bz
-      return tuple(reversed(_projected_jacobian)) + (result,)
+      _projected_jacobians = []
+      _bzs = list(_bz if isinstance(_bz, (tuple, list)) else (_bz,))
+
+      # Loop over active inputs to original function
+      print("n_outer_pushes: {}".format(n_outer_pushes))
+      for i in range(n_outer_pushes):
+        current_adjoint = []
+
+        n_inner_pushes = tangent.pop(_stack, 'jac_inner_pushes_id')
+        print("n_inner_pushes: {}".format(n_inner_pushes))
+        # Loop over all unit directions of the input
+        for j in range(n_inner_pushes):
+          # len(_dz) == number of output variables
+          _dz = tangent.pop(_stack, 'op_id')
+          _dzs = list(_dz if isinstance(_dz, (tuple, list)) else (_dz,))
+          assert len(_bzs) == len(_dzs)
+
+          # Project Jacobian
+          # FIXME: Transpose for NumPy? e.g. tangent.project_grad?
+          products = []
+          for k in range(len(_dzs)):
+            products.append(tangent.mult_grad(_dzs[k], _bzs[k]))
+
+          summed_result = tangent.init_grad(products[0])
+          for p in products:
+            summed_result = tangent.add_grad(summed_result, p)
+
+          current_adjoint.append(summed_result)
+
+        # FIXME: Stack values of one outer_push together to a full input adjoint
+        if len(current_adjoint) == 1:
+          current_adjoint = current_adjoint[0]
+
+        _projected_jacobians.append(current_adjoint)
+
+      return tuple(reversed(_projected_jacobians)) + (result,)
 
   adj = template.replace(
     adjoint_driver_template,

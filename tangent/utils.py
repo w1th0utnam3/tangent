@@ -798,13 +798,17 @@ def __unit_seed_gen(obj):
       for i in range(len(obj)):
         for seed, reset in __unit_seed_gen(obj[i]):
           obj[i] = seed
-          yield obj, reset
+          if not reset:
+            yield obj, reset
+        yield obj, True
 
     elif isinstance(obj, dict):
       for k in obj.keys():
         for seed, reset in __unit_seed_gen(obj[k]):
           obj[k] = seed
-          yield obj, reset
+          if not reset:
+            yield obj, reset
+        yield obj, True
 
     else:
       raise TypeError()
@@ -814,8 +818,7 @@ def unit_seed_directions(obj):
   # TODO: Add register functions for unit seed gens...
   obj_grad = init_grad(obj)
   for direction, is_reset in __unit_seed_gen(obj_grad):
-    if not is_reset:
-      yield direction
+    yield direction if not is_reset else None
 
 
 def push(stack, x, op_id):
