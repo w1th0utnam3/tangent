@@ -118,25 +118,29 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
   # Template for driver used to accumulate the Jacobian in primal section
   def primal_driver_template(_args, _active_args, _tangents,
                              _primal_call, _tangent_call, _dz, _z):
+    # Collects and store tangents in all unit directions of the active inputs
     def _primal_call(_stack, _args):
       # FIXME: Generate/ensure unique names for the local variables?
       _dargs = tangent.init_grad([_active_args])
 
-      n_outer_pushes = 0
-      n_inner_pushes = 0
+      # Counter for dimensions per active variable
+      n_dimensions = 0
 
       for _dseed in tangent.unit_seed_directions(_dargs):
         if _dseed is None:
-          tangent.push(_stack, n_inner_pushes, 'jac_inner_pushes_id')
-          n_inner_pushes = 0
-          n_outer_pushes += 1
+          # All unit seeds of a single active variable were yielded
+          # Therefore, push number of tangents for this variable onto stack
+          tangent.push(_stack, n_dimensions, 'jac_inner_pushes_id')
+          n_dimensions = 0
           continue
 
+        # Obtain tangent for each unit direction of the active variables
         _dz, _z = _tangent_call(_args, *_dseed)
-        tangent.push(_stack, _dz, 'op_id')
-        n_inner_pushes += 1
 
-      tangent.push(_stack, n_outer_pushes, 'jac_outer_pushes_id')
+        tangent.push(_stack, _dz, 'op_id')
+        n_dimensions += 1
+
+      tangent.push(_stack, len(_dargs), 'jac_outer_pushes_id')
       tangent.push(_stack, _z, 'result_id')
       return _z
 
@@ -159,41 +163,43 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
 
   # Template for driver used to restore the Jacobian in adjoint section and calculate vector-Jacobian product
   def adjoint_driver_template(_adjoint, _dz, _bz, _projected_jacobian):
-    # FIXME: Assumes that original func only has one or multiple scalar outputs
+    # Restores output unit tangents and multiplies them by output adjoints
     def _adjoint(_stack, _bz, *args):
       result = tangent.pop(_stack, 'result_id')
-      n_outer_pushes = tangent.pop(_stack, 'jac_outer_pushes_id')
+      n_active_args = tangent.pop(_stack, 'jac_outer_pushes_id')
 
+      # List for the input adjoints
       _projected_jacobians = []
+      # Output adjoints (used to project the Jacobians)
       _bzs = list(_bz if isinstance(_bz, (tuple, list)) else (_bz,))
 
       # Loop over active inputs to original function
-      print("n_outer_pushes: {}".format(n_outer_pushes))
-      for i in range(n_outer_pushes):
+      for i in range(n_active_args):
+        # Input adjoint of the current input
         current_adjoint = []
 
-        n_inner_pushes = tangent.pop(_stack, 'jac_inner_pushes_id')
-        print("n_inner_pushes: {}".format(n_inner_pushes))
-        # Loop over all unit directions of the input
-        for j in range(n_inner_pushes):
-          # len(_dz) == number of output variables
-          _dz = tangent.pop(_stack, 'op_id')
+        n_dimensions = tangent.pop(_stack, 'jac_inner_pushes_id')
+        # Loop over all dimensions (unit seeds) of the input variable
+        for j in range(n_dimensions):
+          # Get all output tangents corresponding to current unit seed
+          _dz = tangent.pop(_stack, 'op_id')  # len(_dz) == n output variables
           _dzs = list(_dz if isinstance(_dz, (tuple, list)) else (_dz,))
-          assert len(_bzs) == len(_dzs)
+          assert len(_dzs) == len(_bzs)
 
           # Project Jacobian
+          # i.e. dot product between output tangent and output adjoint)
+
           # FIXME: Transpose for NumPy? e.g. tangent.project_grad?
           products = []
           for k in range(len(_dzs)):
             products.append(tangent.mult_grad(_dzs[k], _bzs[k]))
 
-          summed_result = tangent.init_grad(products[0])
+          dot_product = tangent.init_grad(products[0])
           for p in products:
-            summed_result = tangent.add_grad(summed_result, p)
+            dot_product = tangent.add_grad(dot_product, p)
 
-          current_adjoint.append(summed_result)
+          current_adjoint.append(dot_product)
 
-        # FIXME: Stack values of one outer_push together to a full input adjoint
         if len(current_adjoint) == 1:
           current_adjoint = current_adjoint[0]
 
