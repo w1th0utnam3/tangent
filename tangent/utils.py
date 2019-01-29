@@ -815,6 +815,30 @@ def __unit_seed_gen(obj):
 
 
 def unit_seed_directions(obj):
+  """Generator yielding all unit seed 'vectors' for the input.
+
+  Args:
+    obj: Scalar, NumPy array or list/dict of them. Containers may should only
+        be nested once.
+
+  Yields:
+    Unit seed 'vectors' to obtain a full Jacobian from a tangent/adjoint
+    model, where `obj` corresponds to the input of the model. A `None` value
+    is yielded each time between seperate `variables` in `obj`. That means if
+    `obj` is a list or dict, it is considered as mathematical tuple of
+    distinct input variables. `None` is yielded after all unit vectors of each
+    variable were yielded. E.g.: an input of
+      obj = [1, 2, [3, 4]]
+    yields the sequence:
+      [1, 0, [0, 0]],
+      None,
+      [0, 1, [0, 0]],
+      None,
+      [0, 0, [1, 0]],
+      [0, 0, [0, 1]],
+      None
+  """
+
   # TODO: Add register functions for unit seed gens...
   obj_grad = init_grad(obj)
   for direction, is_reset in __unit_seed_gen(obj_grad):
