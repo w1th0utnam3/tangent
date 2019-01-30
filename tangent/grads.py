@@ -262,6 +262,11 @@ def sqrt(y, x):
   d[x] = d[y] / (2.0 * y)
 
 
+@adjoint(numpy.square)
+def sqrt(y, x):
+  d[x] = 2.0 * d[y]
+
+
 @adjoint(numpy.multiply)
 def multiply(z, x, y):
   d[x] = y * d[z]
