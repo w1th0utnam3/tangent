@@ -129,7 +129,7 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
       for _dseed in tangent.unit_seed_directions(_dargs):
         if _dseed is None:
           # All unit seeds of a single active variable were yielded
-          # Therefore, push number of tangents for this variable onto stack
+          # -> Push number of tangents for this variable onto stack
           tangent.push(_stack, n_dimensions, 'jac_inner_pushes_id')
           n_dimensions = 0
           continue
@@ -187,7 +187,7 @@ def forward_preacc(node, wrt, motion, check_dims, verbose=0):
           assert len(_dzs) == len(_bzs)
 
           # Project Jacobian
-          # i.e. dot product between output tangent and output adjoint)
+          # (i.e. dot product between output tangent and output adjoint)
 
           # FIXME: Transpose for NumPy? e.g. tangent.project_grad?
           products = []
@@ -257,42 +257,63 @@ def reverse_preacc(node, wrt, motion, check_dims, verbose=0):
   for it in arg_tangents:
     it.id = 'd{}'.format(it.id)
 
-  def tangent_driver_template(_args, _arg_tangents,
+  def tangent_driver_template(_args, _dx,
                               _tangent_call, _primal_call, _adjoint_call):
-    def _tangent_call(_args, _arg_tangents):
+    def _tangent_call(_args, _dx):
       _stack = tangent.Stack()
       _return = _primal_call(_stack, _args)
 
-      _dargs = (_arg_tangents,)
-      _dreturn = tangent.init_grad(_return)
-      _dreturn = _dreturn if isinstance(_dreturn, list) else [_dreturn]
+      _dxs = (_dx,)
+      _dreturn = []
+
+      current_tangent = []
 
       # FIXME: Are all return values always active?
-      # FIXME: Enumerate not compatible with nested lists/numpy arrays in lists
-      for i, _bseed in enumerate(tangent.unit_seed_directions(_return)):
+      for _bseed in tangent.unit_seed_directions(_return):
+        if _bseed is None:
+          # All unit seeds of a single active output variable were yielded
+          # -> Append current tangent to full return list
+
+          # Add scalars without enclosing list
+          if len(current_tangent) == 1:
+            current_tangent = current_tangent[0]
+
+          _dreturn.append(current_tangent)
+          current_tangent = []
+          continue
+
         # FIXME: Make copies of the stack instead of re-evaluating the primal
         if _stack is None:
             _stack = tangent.Stack()
             _primal_call(_stack, _args)
 
         _bargs = _adjoint_call(_stack, _bseed, _args)
+        _bargss = list(_bargs if isinstance(_bargs, (tuple, list)) else(_bargs,))
 
-        # FIXME: For higher dimensions: dz * bz or bz * dz?
-        for j in range(len(_dargs)):
-          _dreturn[i] = tangent.add_grad(_dreturn[i], tangent.mult_grad(_bargs[j], _dargs[j]))
+        # Project Jacobian
+        # (i.e. dot product between input adjoint and input tangent)
 
+        products = []
+        for k in range(len(_bargss)):
+          products.append(tangent.mult_grad(_bargss[k], _dxs[k]))
+
+        dot_product = tangent.init_grad(products[0])
+        for p in products:
+          dot_product = tangent.add_grad(dot_product, p)
+
+        current_tangent.append(dot_product)
         _stack = None
 
-      dt = tuple(_dreturn)
-      t = _return
-      return dt, t
+      dz = tuple(_dreturn)
+      z = _return
+      return dz, z
 
   tangent_driver_def = template.replace(
     tangent_driver_template,
     replace_grad=template.Replace.NONE,
     namer=None,
     _args=func_args,
-    _arg_tangents=arg_tangents,
+    _dx=arg_tangents,
     _tangent_call=tangent_name,
     _primal_call=primal_name,
     _adjoint_call=adjoint_name
