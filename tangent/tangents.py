@@ -199,6 +199,11 @@ def tsqrt(z, x):
   d[z] = d[x] / (2 * z)
 
 
+@tangent_(numpy.square)
+def tsquare(z, x):
+  d[z] = 2 * d[x]
+
+
 @tangent_(numpy.dot)
 def tdot(z, x, y):
   d[z] = numpy.dot(d[x], y) + numpy.dot(x, d[y])
